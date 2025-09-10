@@ -4,7 +4,7 @@ import { CallControls } from './components/CallControls';
 import { VideoCall } from './components/VideoCall';
 import { useCallStore } from './store/useCallStore';
 import { useSettingsStore } from './store/useSettingsStore';
-import sipService from './services/sipService';
+import { sipService } from './services/sipService';
 
 function App() {
   const { status, localStream, remoteStream } = useCallStore();

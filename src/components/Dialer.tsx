@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Phone, Backpack as Backspace, Clock, User } from 'lucide-react';
 import { Button } from './ui/Button';
-import sipService from '../services/sipService';
+import { sipService } from '../services/sipService';
 import { useCallStore } from '../store/useCallStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 

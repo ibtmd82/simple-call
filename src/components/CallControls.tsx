@@ -3,7 +3,7 @@ import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Hash } from 'lucide-reac
 import { CallButton } from './ui/CallButton';
 import { InCallNumpad } from './InCallNumpad';
 import { useCallStore } from '../store/useCallStore';
-import sipService from '../services/sipService';
+import { sipService } from '../services/sipService';
 import { formatDuration } from '../utils/timeUtils';
 
 export const CallControls: React.FC = () => {

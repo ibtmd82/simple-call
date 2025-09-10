@@ -3,7 +3,7 @@ import { Settings as SettingsIcon, Save, Eye, EyeOff, Wifi, Server, User, Lock, 
 import { Input } from './ui/Input';
 import { Button } from './ui/Button';
 import { useSettingsStore } from '../store/useSettingsStore';
-import sipService from '../services/sipService';
+import { sipService } from '../services/sipService';
 
 interface SettingsProps {
   onClose?: () => void;

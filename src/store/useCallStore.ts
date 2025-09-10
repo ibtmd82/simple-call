@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { CallState, CallHistoryItem, CallStatus } from '../types';
 import { v4 as uuidv4 } from 'uuid';
-import sipService from '../services/sipService';
+import { sipService } from '../services/sipService';
 
 const initialState: CallState = {
   status: 'idle',
