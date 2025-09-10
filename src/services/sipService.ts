@@ -1,7 +1,7 @@
 import { UserAgent, Session } from 'sip.js';
 import { WebSocketTransport } from 'sip.js/lib/api/transport/web-socket-transport';
 import { CallStatus, SipConfig } from '../types';
-
+import { Web } from "sip.js";
 export class SIPService {
   private ua: UserAgent | null = null;
   private currentSession: Session | null = null;
@@ -36,7 +36,7 @@ export class SIPService {
         this.ua = null;
       }
 
-      const socket = new WebSocketTransport(config.server);
+      const socket = new Web.Transport.WebSocket(config.server);
       
       const uaConfig = {
         sockets: [socket],
