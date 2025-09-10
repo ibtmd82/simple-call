@@ -1,5 +1,5 @@
-import { UA, RTCSession, WebSocketInterface } from 'jssip';
-import { CallState, SIPConfig } from '../types';
+import { UA, WebSocketInterface, RTCSession } from 'sip.js';
+import { CallStatus, SipConfig } from '../types';
 
 export class SIPService {
   private ua: UA | null = null;
