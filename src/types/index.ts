@@ -29,8 +29,10 @@ export interface CallHistoryItem {
 
 export interface SipConfig {
   domain: string;
-  username: string;
+  uri: string;
   password: string;
-  server: string;
+  wsServer: string;
+  callId?: string;
+  disableDtls?: boolean;
   displayName?: string;
 }

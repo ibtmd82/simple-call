@@ -24,7 +24,7 @@ function App() {
             wsServer: config.wsServer,
             hasPassword: !!config.password
           });
-          await sipService.initialize(config);
+          await sipService.connect(config);
         } else {
           console.log('No saved SIP configuration found. User must configure manually in Settings.');
         }

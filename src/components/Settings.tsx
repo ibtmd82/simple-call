@@ -73,7 +73,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
 
       // Test connection with new config
       try {
-        await sipService.initialize(formData);
+        await sipService.connect(formData);
         setTestResult({
           success: true,
           message: 'Settings saved and connection established successfully!'
@@ -109,7 +109,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         return;
       }
 
-      await sipService.initialize(formData);
+      await sipService.connect(formData);
       setTestResult({
         success: true,
         message: 'Connection test successful!'

@@ -23,8 +23,8 @@ export class SIPService {
   async connect(config: SIPConfig): Promise<void> {
     try {
       console.log('Connecting to SIP server with config:', {
-        server: config.server,
-        username: config.username,
+        server: config.wsServer,
+        username: config.uri,
         // Don't log password for security
       });
 
@@ -36,13 +36,13 @@ export class SIPService {
         this.ua = null;
       }
 
-      const socket = new Web.Transport.WebSocket(config.server);
+      const socket = new Web.Transport.WebSocket(config.wsServer);
       
       const uaConfig = {
         sockets: [socket],
-        uri: `sip:${config.username}@${config.domain}`,
+        uri: `sip:${config.uri}@${config.domain}`,
         password: config.password,
-        display_name: config.displayName || config.username,
+        display_name: config.displayName || config.uri,
         register: true,
         register_expires: 600, // 10 minutes
         session_timers: false,
