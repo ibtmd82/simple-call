@@ -417,7 +417,7 @@ export class SIPService {
   }
 
   // Event handlers
-  onStateChanged(callback: (state: CallState) => void): void {
+  onStateChanged(callback: (state: CallStatus) => void): void {
     this.onStateChange = callback;
   }
 
