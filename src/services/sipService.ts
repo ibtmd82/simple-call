@@ -1,9 +1,9 @@
-import { UA, WebSocketInterface, RTCSession } from 'sip.js';
+import { UserAgent, WebSocketTransport, Session } from 'sip.js';
 import { CallStatus, SipConfig } from '../types';
 
 export class SIPService {
-  private ua: UA | null = null;
-  private currentSession: RTCSession | null = null;
+  private ua: UserAgent | null = null;
+  private currentSession: Session | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private isExplicitlyDisconnecting = false;
@@ -35,7 +35,7 @@ export class SIPService {
         this.ua = null;
       }
 
-      const socket = new WebSocketInterface(config.server);
+      const socket = new WebSocketTransport(config.server);
       
       const uaConfig = {
         sockets: [socket],
@@ -53,7 +53,7 @@ export class SIPService {
         password: '[HIDDEN]'
       });
 
-      this.ua = new UA(uaConfig);
+      this.ua = new UserAgent(uaConfig);
 
       this.ua.on('connecting', () => {
         console.log('Connecting to SIP server...');
@@ -186,7 +186,7 @@ export class SIPService {
     }
   }
 
-  private handleIncomingCall(session: RTCSession): void {
+  private handleIncomingCall(session: Session): void {
     console.log('Incoming call from:', session.remote_identity.uri.user);
     this.currentSession = session;
     this.setupSessionEventListeners(session);
@@ -248,7 +248,7 @@ export class SIPService {
     }
   }
 
-  private setupSessionEventListeners(session: RTCSession): void {
+  private setupSessionEventListeners(session: Session): void {
     console.log('Setting up session event listeners');
 
     session.on('connecting', () => {
@@ -292,7 +292,7 @@ export class SIPService {
     });
   }
 
-  private setupPeerConnectionListeners(session: RTCSession): void {
+  private setupPeerConnectionListeners(session: Session): void {
     const pc = session.connection;
     if (!pc) {
       console.warn('No peer connection available');
@@ -404,7 +404,7 @@ export class SIPService {
     return this.remoteStream;
   }
 
-  getCurrentSession(): RTCSession | null {
+  getCurrentSession(): Session | null {
     return this.currentSession;
   }
 
