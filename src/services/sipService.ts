@@ -1,5 +1,5 @@
 import { UserAgent, Session } from 'sip.js';
-import { WebSocketTransport } from 'sip.js/lib/web';
+//import { WebSocketTransport } from 'sip.js/lib/web';
 import { CallStatus, SipConfig } from '../types';
 export class SIPService {
   private ua: UserAgent | null = null;
