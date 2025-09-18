@@ -1,6 +1,6 @@
-import { UserAgent, Session } from 'sip.js';
-//import { WebSocketTransport } from 'sip.js/lib/web';
+import { UserAgent, Session, UserAgentDelegate } from 'sip.js';
 import { CallStatus, SipConfig } from '../types';
+
 export class SIPService {
   private ua: UserAgent | null = null;
   private currentSession: Session | null = null;
@@ -8,7 +8,7 @@ export class SIPService {
   private remoteStream: MediaStream | null = null;
   private isExplicitlyDisconnecting = false;
   private isReregistering = false;
-  private onStateChange?: (state: CallState) => void;
+  private onStateChange?: (state: CallStatus) => void;
   private onRemoteStreamChange?: (stream: MediaStream | null) => void;
 
   constructor() {
@@ -19,104 +19,99 @@ export class SIPService {
     // Event listeners will be set up when UA is created
   }
 
-  async connect(config: SIPConfig): Promise<void> {
+  async connect(config: SipConfig): Promise<void> {
     try {
       console.log('Connecting to SIP server with config:', {
         server: config.wsServer,
         username: config.uri,
-        // Don't log password for security
+        domain: config.domain,
+        callId: config.callId,
+        disableDtls: config.disableDtls,
       });
 
       if (this.ua) {
         console.log('Disconnecting existing UA before reconnecting...');
         this.isExplicitlyDisconnecting = true;
-        this.ua.unregister();
-        this.ua.stop();
+        await this.ua.unregister();
+        await this.ua.stop();
         this.ua = null;
       }
 
-      const socket = new WebSocketTransport(config.wsServer);
-      
       const uaConfig = {
-        sockets: [socket],
         uri: `sip:${config.uri}@${config.domain}`,
+        transportOptions: {
+          server: config.wsServer, // e.g., 'wss://sip.example.com:443'
+        },
+        authorizationUser: config.uri,
         password: config.password,
-        display_name: config.displayName || config.uri,
+        displayName: config.displayName || config.uri,
         register: true,
-        register_expires: 600, // 10 minutes
-        session_timers: false,
+        registerExpires: 600,
+        sessionTimers: !config.disableDtls,
         rtcpMuxPolicy: 'require',
+        callId: config.callId || undefined,
       };
 
       console.log('Creating UA with config:', {
         ...uaConfig,
-        password: '[HIDDEN]'
+        password: '[HIDDEN]',
       });
 
       this.ua = new UserAgent(uaConfig);
 
-      this.ua.on('connecting', () => {
-        console.log('Connecting to SIP server...');
-        this.onStateChange?.(CallState.CONNECTING);
-      });
-
-      this.ua.on('connected', () => {
-        console.log('Connected to SIP server');
-        this.onStateChange?.(CallState.CONNECTED);
-      });
-
-      this.ua.on('disconnected', () => {
-        console.log('Disconnected from SIP server');
-        if (!this.isExplicitlyDisconnecting) {
-          this.onStateChange?.(CallState.DISCONNECTED);
-        }
-      });
-
-      this.ua.on('registered', () => {
-        console.log('Registered to SIP server');
-        this.isReregistering = false;
-        this.onStateChange?.(CallState.REGISTERED);
-      });
-
-      this.ua.on('unregistered', () => {
-        console.log('Registration state changed: Unregistered');
-        if (!this.isExplicitlyDisconnecting && !this.isReregistering) {
-          console.log('Unregistered from SIP server');
-          this.onStateChange?.(CallState.UNREGISTERED);
-          
-          console.log('Unexpected unregistration, attempting to re-register...');
-          this.isReregistering = true;
-          setTimeout(() => {
-            if (this.ua && !this.isExplicitlyDisconnecting) {
-              try {
-                this.ua.register();
-              } catch (error) {
-                console.error('Re-registration failed:', error);
-                this.isReregistering = false;
-                this.onStateChange?.(CallState.ERROR);
+      this.ua.delegate = {
+        onInvite: (session: Session) => {
+          console.log('New RTC session:', session);
+          this.handleIncomingCall(session);
+        },
+        onConnect: () => {
+          console.log('Connected to SIP server');
+          this.onStateChange?.(CallStatus.CONNECTED);
+        },
+        onDisconnect: () => {
+          console.log('Disconnected from SIP server');
+          if (!this.isExplicitlyDisconnecting) {
+            this.onStateChange?.(CallStatus.DISCONNECTED);
+          }
+        },
+        onRegister: () => {
+          console.log('Registered to SIP server');
+          this.isReregistering = false;
+          this.onStateChange?.(CallStatus.REGISTERED);
+        },
+        onUnregister: () => {
+          console.log('Registration state changed: Unregistered');
+          if (!this.isExplicitlyDisconnecting && !this.isReregistering) {
+            console.log('Unregistered from SIP server');
+            this.onStateChange?.(CallStatus.UNREGISTERED);
+            console.log('Unexpected unregistration, attempting to re-register...');
+            this.isReregistering = true;
+            setTimeout(() => {
+              if (this.ua && !this.isExplicitlyDisconnecting) {
+                try {
+                  this.ua.register();
+                } catch (error) {
+                  console.error('Re-registration failed:', error);
+                  this.isReregistering = false;
+                  this.onStateChange?.(CallStatus.ERROR);
+                }
               }
-            }
-          }, 2000);
-        }
-      });
+            }, 2000);
+          }
+        },
+        onRegistrationFailed: (error: any) => {
+          console.error('Registration failed:', error);
+          this.isReregistering = false;
+          this.onStateChange?.(CallStatus.ERROR);
+        },
+      } as UserAgentDelegate;
 
-      this.ua.on('registrationFailed', (e: any) => {
-        console.error('Registration failed:', e);
-        this.isReregistering = false;
-        this.onStateChange?.(CallState.ERROR);
-      });
-
-      this.ua.on('newRTCSession', (e: any) => {
-        console.log('New RTC session:', e);
-        this.handleIncomingCall(e.session);
-      });
-
-      this.ua.start();
+      await this.ua.start();
       this.isExplicitlyDisconnecting = false;
 
     } catch (error) {
       console.error('Failed to connect to SIP server:', error);
-      this.onStateChange?.(CallState.ERROR);
+      this.onStateChange?.(CallStatus.ERROR);
       throw error;
     }
   }
@@ -124,20 +119,20 @@ export class SIPService {
   async disconnect(): Promise<void> {
     console.log('Disconnecting from SIP server...');
     this.isExplicitlyDisconnecting = true;
-    
+
     if (this.currentSession) {
-      this.currentSession.terminate();
+      await this.currentSession.terminate();
       this.currentSession = null;
     }
 
     if (this.ua) {
-      this.ua.unregister();
-      this.ua.stop();
+      await this.ua.unregister();
+      await this.ua.stop();
       this.ua = null;
     }
 
     this.cleanup();
-    this.onStateChange?.(CallState.DISCONNECTED);
+    this.onStateChange?.(CallStatus.DISCONNECTED);
   }
 
   async makeCall(number: string, video: boolean = false): Promise<void> {
@@ -148,10 +143,9 @@ export class SIPService {
     try {
       console.log(`Making ${video ? 'video' : 'audio'} call to:`, number);
 
-      // Get user media
       const constraints = {
         audio: true,
-        video: video
+        video: video,
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -163,21 +157,21 @@ export class SIPService {
         pcConfig: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
+            { urls: 'stun:stun1.l.google.com:19302' },
           ],
-          rtcpMuxPolicy: 'require'
+          rtcpMuxPolicy: 'require',
         },
         offerOptions: {
           offerToReceiveAudio: true,
-          offerToReceiveVideo: video
-        }
+          offerToReceiveVideo: video,
+        },
       };
 
       const session = this.ua.call(`sip:${number}@${this.ua.configuration.uri.host}`, options);
       this.currentSession = session;
       this.setupSessionEventListeners(session);
 
-      this.onStateChange?.(CallState.CALLING);
+      this.onStateChange?.(CallStatus.CALLING);
 
     } catch (error) {
       console.error('Failed to make call:', error);
@@ -187,10 +181,10 @@ export class SIPService {
   }
 
   private handleIncomingCall(session: Session): void {
-    console.log('Incoming call from:', session.remote_identity.uri.user);
+    console.log('Incoming call from:', session.remoteIdentity.uri.user);
     this.currentSession = session;
     this.setupSessionEventListeners(session);
-    this.onStateChange?.(CallState.INCOMING);
+    this.onStateChange?.(CallStatus.INCOMING);
   }
 
   async answerCall(video: boolean = false): Promise<void> {
@@ -203,7 +197,7 @@ export class SIPService {
 
       const constraints = {
         audio: true,
-        video: video
+        video: video,
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -215,17 +209,17 @@ export class SIPService {
         pcConfig: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
+            { urls: 'stun:stun1.l.google.com:19302' },
           ],
-          rtcpMuxPolicy: 'require'
+          rtcpMuxPolicy: 'require',
         },
         answerOptions: {
           offerToReceiveAudio: true,
-          offerToReceiveVideo: video
-        }
+          offerToReceiveVideo: video,
+        },
       };
 
-      this.currentSession.answer(options);
+      await this.currentSession.answer(options);
 
     } catch (error) {
       console.error('Failed to answer call:', error);
@@ -251,49 +245,31 @@ export class SIPService {
   private setupSessionEventListeners(session: Session): void {
     console.log('Setting up session event listeners');
 
-    session.on('connecting', () => {
-      console.log('Session connecting...');
-      this.onStateChange?.(CallState.CONNECTING);
-    });
-
-    session.on('progress', () => {
-      console.log('Session in progress...');
-      this.onStateChange?.(CallState.RINGING);
-    });
-
-    session.on('accepted', () => {
-      console.log('Session accepted');
-      this.onStateChange?.(CallState.CONNECTED);
-      this.setupPeerConnectionListeners(session);
-    });
-
-    session.on('confirmed', () => {
-      console.log('Session confirmed');
-      this.onStateChange?.(CallState.CONNECTED);
-      this.setupPeerConnectionListeners(session);
-    });
-
-    session.on('ended', () => {
-      console.log('Session ended');
-      this.cleanup();
-      this.onStateChange?.(CallState.DISCONNECTED);
-    });
-
-    session.on('failed', (e: any) => {
-      console.error('Session failed:', e);
-      this.cleanup();
-      this.onStateChange?.(CallState.ERROR);
-    });
-
-    // Handle peer connection events
-    session.on('peerconnection', (e: any) => {
-      console.log('Peer connection created:', e);
-      this.setupPeerConnectionListeners(session);
-    });
+    session.delegate = {
+      onAccept: () => {
+        console.log('Session accepted');
+        this.onStateChange?.(CallStatus.CONNECTED);
+        this.setupPeerConnectionListeners(session);
+      },
+      onProgress: () => {
+        console.log('Session in progress...');
+        this.onStateChange?.(CallStatus.RINGING);
+      },
+      onTerminated: () => {
+        console.log('Session ended');
+        this.cleanup();
+        this.onStateChange?.(CallStatus.DISCONNECTED);
+      },
+      onFailed: (error: any) => {
+        console.error('Session failed:', error);
+        this.cleanup();
+        this.onStateChange?.(CallStatus.ERROR);
+      },
+    };
   }
 
   private setupPeerConnectionListeners(session: Session): void {
-    const pc = session.connection;
+    const pc = session.sessionDescriptionHandler?.peerConnection;
     if (!pc) {
       console.warn('No peer connection available');
       return;
@@ -301,34 +277,18 @@ export class SIPService {
 
     console.log('Setting up peer connection listeners');
 
-    // Handle incoming tracks
     pc.ontrack = (event: RTCTrackEvent) => {
       console.log('Received remote track:', event);
       if (event.streams && event.streams[0]) {
-        console.log('Setting remote stream from ontrack:', event.streams[0]);
+        console.log('Setting remote stream:', event.streams[0]);
         this.remoteStream = event.streams[0];
         this.onRemoteStreamChange?.(this.remoteStream);
-        
-        // Log track details
         event.streams[0].getTracks().forEach(track => {
           console.log(`Remote ${track.kind} track:`, track);
         });
       }
     };
 
-    // Legacy support for older browsers
-    pc.onaddstream = (event: any) => {
-      console.log('Received remote stream (legacy):', event.stream);
-      this.remoteStream = event.stream;
-      this.onRemoteStreamChange?.(this.remoteStream);
-      
-      // Log track details
-      event.stream.getTracks().forEach((track: MediaStreamTrack) => {
-        console.log(`Remote ${track.kind} track (legacy):`, track);
-      });
-    };
-
-    // Monitor connection state
     pc.onconnectionstatechange = () => {
       console.log('Peer connection state:', pc.connectionState);
       if (pc.connectionState === 'connected') {
@@ -343,7 +303,6 @@ export class SIPService {
       }
     };
 
-    // Check for remote streams after a delay
     setTimeout(() => {
       this.checkForRemoteStreams(pc);
     }, 2000);
@@ -351,25 +310,22 @@ export class SIPService {
 
   private checkForRemoteStreams(pc: RTCPeerConnection): void {
     console.log('Checking for remote streams...');
-    
+
     const remoteStreams = pc.getRemoteStreams?.() || [];
     console.log('Remote streams found:', remoteStreams.length);
-    
+
     if (remoteStreams.length > 0 && !this.remoteStream) {
       console.log('Setting remote stream from getRemoteStreams:', remoteStreams[0]);
       this.remoteStream = remoteStreams[0];
       this.onRemoteStreamChange?.(this.remoteStream);
-      
-      // Log track details
       remoteStreams[0].getTracks().forEach(track => {
         console.log(`Remote ${track.kind} track from getRemoteStreams:`, track);
       });
     }
 
-    // Also check receivers
     const receivers = pc.getReceivers();
     console.log('Receivers found:', receivers.length);
-    
+
     receivers.forEach((receiver, index) => {
       if (receiver.track) {
         console.log(`Receiver ${index} track:`, receiver.track.kind, receiver.track);
@@ -379,7 +335,7 @@ export class SIPService {
 
   private cleanup(): void {
     console.log('Cleaning up call resources...');
-    
+
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
         track.stop();
@@ -427,7 +383,7 @@ export class SIPService {
 
   // DTMF support
   sendDTMF(tone: string): void {
-    if (this.currentSession && this.currentSession.isEstablished()) {
+    if (this.currentSession && this.currentSession.state === 'established') {
       console.log('Sending DTMF tone:', tone);
       this.currentSession.sendDTMF(tone);
     } else {
@@ -437,7 +393,7 @@ export class SIPService {
 
   // Call transfer
   transfer(target: string): void {
-    if (this.currentSession && this.currentSession.isEstablished()) {
+    if (this.currentSession && this.currentSession.state === 'established') {
       console.log('Transferring call to:', target);
       this.currentSession.refer(target);
     } else {
@@ -447,14 +403,14 @@ export class SIPService {
 
   // Hold/Unhold
   hold(): void {
-    if (this.currentSession && this.currentSession.isEstablished()) {
+    if (this.currentSession && this.currentSession.state === 'established') {
       console.log('Putting call on hold');
       this.currentSession.hold();
     }
   }
 
   unhold(): void {
-    if (this.currentSession && this.currentSession.isEstablished()) {
+    if (this.currentSession && this.currentSession.state === 'established') {
       console.log('Resuming call from hold');
       this.currentSession.unhold();
     }
@@ -499,5 +455,4 @@ export class SIPService {
   }
 }
 
-// Export singleton instance
 export const sipService = new SIPService();
