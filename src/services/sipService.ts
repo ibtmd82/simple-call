@@ -1,8 +1,9 @@
-import { UserAgent, Session, UserAgentDelegate } from 'sip.js';
-import { CallStatus, SipConfig } from '../types';
+import { UserAgent, Session, UserAgentDelegate, Registerer } from 'sip.js';
+import { CallStatus, SipConfig } from '../types/index';
 
 export class SIPService {
   private ua: UserAgent | null = null;
+  private registerer: Registerer | null = null; // Add Registerer instance
   private currentSession: Session | null = null;
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
@@ -32,9 +33,12 @@ export class SIPService {
       if (this.ua) {
         console.log('Disconnecting existing UA before reconnecting...');
         this.isExplicitlyDisconnecting = true;
-        await this.ua.unregister();
+        if (this.registerer) {
+          await this.registerer.unregister(); // Use Registerer to unregister
+        }
         await this.ua.stop();
         this.ua = null;
+        this.registerer = null;
       }
 
       const uaConfig = {
@@ -45,7 +49,7 @@ export class SIPService {
         authorizationUser: config.uri,
         password: config.password,
         displayName: config.displayName || config.uri,
-        register: true,
+        register: false, // Let Registerer handle registration
         registerExpires: 600,
         sessionTimers: !config.disableDtls,
         rtcpMuxPolicy: 'require',
@@ -66,52 +70,59 @@ export class SIPService {
         },
         onConnect: () => {
           console.log('Connected to SIP server');
-          this.onStateChange?.(CallStatus.CONNECTED);
+          this.onStateChange?.(CallStatus.CONNECTING);
         },
         onDisconnect: () => {
           console.log('Disconnected from SIP server');
           if (!this.isExplicitlyDisconnecting) {
-            this.onStateChange?.(CallStatus.DISCONNECTED);
+            this.onStateChange?.(CallStatus.ENDED);
           }
-        },
-        onRegister: () => {
-          console.log('Registered to SIP server');
-          this.isReregistering = false;
-          this.onStateChange?.(CallStatus.REGISTERED);
-        },
-        onUnregister: () => {
-          console.log('Registration state changed: Unregistered');
-          if (!this.isExplicitlyDisconnecting && !this.isReregistering) {
-            console.log('Unregistered from SIP server');
-            this.onStateChange?.(CallStatus.UNREGISTERED);
-            console.log('Unexpected unregistration, attempting to re-register...');
-            this.isReregistering = true;
-            setTimeout(() => {
-              if (this.ua && !this.isExplicitlyDisconnecting) {
-                try {
-                  this.ua.register();
-                } catch (error) {
-                  console.error('Re-registration failed:', error);
-                  this.isReregistering = false;
-                  this.onStateChange?.(CallStatus.ERROR);
-                }
-              }
-            }, 2000);
-          }
-        },
-        onRegistrationFailed: (error: any) => {
-          console.error('Registration failed:', error);
-          this.isReregistering = false;
-          this.onStateChange?.(CallStatus.ERROR);
         },
       } as UserAgentDelegate;
 
+      this.registerer = new Registerer(this.ua, {
+        expires: 600,
+      });
+
+      this.registerer.stateChange.addListener((state) => {
+        console.log(`Registerer state changed: ${state}`);
+        switch (state) {
+          case 'Registered':
+            this.isReregistering = false;
+            this.onStateChange?.(CallStatus.REGISTERED);
+            break;
+          case 'Unregistered':
+            if (!this.isExplicitlyDisconnecting && !this.isReregistering) {
+              console.log('Unregistered from SIP server');
+              this.onStateChange?.(CallStatus.UNREGISTERED);
+              console.log('Unexpected unregistration, attempting to re-register...');
+              this.isReregistering = true;
+              setTimeout(() => {
+                if (this.registerer && !this.isExplicitlyDisconnecting) {
+                  try {
+                    this.registerer.register();
+                  } catch (error) {
+                    console.error('Re-registration failed:', error);
+                    this.isReregistering = false;
+                    this.onStateChange?.(CallStatus.FAILED);
+                  }
+                }
+              }, 2000);
+            }
+            break;
+          case 'Terminated':
+            this.onStateChange?.(CallStatus.ENDED);
+            break;
+        }
+      });
+
       await this.ua.start();
+      await this.registerer.register(); // Register using Registerer
       this.isExplicitlyDisconnecting = false;
 
     } catch (error) {
       console.error('Failed to connect to SIP server:', error);
-      this.onStateChange?.(CallStatus.ERROR);
+      this.onStateChange?.(CallStatus.FAILED);
       throw error;
     }
   }
@@ -125,14 +136,18 @@ export class SIPService {
       this.currentSession = null;
     }
 
+    if (this.registerer) {
+      await this.registerer.unregister(); // Use Registerer to unregister
+      this.registerer = null;
+    }
+
     if (this.ua) {
-      await this.ua.unregister();
       await this.ua.stop();
       this.ua = null;
     }
 
     this.cleanup();
-    this.onStateChange?.(CallStatus.DISCONNECTED);
+    this.onStateChange?.(CallStatus.ENDED);
   }
 
   async makeCall(number: string, video: boolean = false): Promise<void> {
@@ -176,6 +191,7 @@ export class SIPService {
     } catch (error) {
       console.error('Failed to make call:', error);
       this.cleanup();
+      this.onStateChange?.(CallStatus.FAILED);
       throw error;
     }
   }
@@ -220,10 +236,12 @@ export class SIPService {
       };
 
       await this.currentSession.answer(options);
+      this.onStateChange?.(CallStatus.ACTIVE);
 
     } catch (error) {
       console.error('Failed to answer call:', error);
       this.cleanup();
+      this.onStateChange?.(CallStatus.FAILED);
       throw error;
     }
   }
@@ -232,6 +250,7 @@ export class SIPService {
     if (this.currentSession) {
       console.log('Rejecting call');
       this.currentSession.terminate();
+      this.onStateChange?.(CallStatus.ENDED);
     }
   }
 
@@ -239,6 +258,7 @@ export class SIPService {
     if (this.currentSession) {
       console.log('Hanging up call');
       this.currentSession.terminate();
+      this.onStateChange?.(CallStatus.ENDED);
     }
   }
 
@@ -248,7 +268,7 @@ export class SIPService {
     session.delegate = {
       onAccept: () => {
         console.log('Session accepted');
-        this.onStateChange?.(CallStatus.CONNECTED);
+        this.onStateChange?.(CallStatus.ACTIVE);
         this.setupPeerConnectionListeners(session);
       },
       onProgress: () => {
@@ -258,12 +278,12 @@ export class SIPService {
       onTerminated: () => {
         console.log('Session ended');
         this.cleanup();
-        this.onStateChange?.(CallStatus.DISCONNECTED);
+        this.onStateChange?.(CallStatus.ENDED);
       },
       onFailed: (error: any) => {
         console.error('Session failed:', error);
         this.cleanup();
-        this.onStateChange?.(CallStatus.ERROR);
+        this.onStateChange?.(CallStatus.FAILED);
       },
     };
   }
@@ -292,6 +312,7 @@ export class SIPService {
     pc.onconnectionstatechange = () => {
       console.log('Peer connection state:', pc.connectionState);
       if (pc.connectionState === 'connected') {
+        this.onStateChange?.(CallStatus.ACTIVE);
         this.checkForRemoteStreams(pc);
       }
     };
@@ -369,7 +390,7 @@ export class SIPService {
   }
 
   isRegistered(): boolean {
-    return this.ua?.isRegistered() || false;
+    return this.registerer?.state === 'Registered' || false;
   }
 
   // Event handlers
