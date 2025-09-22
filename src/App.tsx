@@ -5,6 +5,7 @@ import { VideoCall } from './components/VideoCall';
 import { useCallStore } from './store/useCallStore';
 import { useSettingsStore } from './store/useSettingsStore';
 import { sipService } from './services/sipService';
+import { CallStatus } from './types/index';
 
 function App() {
   const { status, localStream, remoteStream, setStatus } = useCallStore();
@@ -19,16 +20,18 @@ function App() {
             domain: config.domain,
             uri: config.uri,
             wsServer: config.wsServer,
+            callId: config.callId,
+            disableDtls: config.disableDtls,
             hasPassword: !!config.password,
           });
           await sipService.connect(config);
         } else {
           console.log('No saved SIP configuration found. User must configure manually in Settings.');
-          setStatus(CallStatus.DISCONNECTED); // Update status
+          setStatus(CallStatus.IDLE);
         }
       } catch (error) {
         console.error('Auto-initialization failed:', error);
-        setStatus(CallStatus.ERROR); // Update status on error
+        setStatus(CallStatus.FAILED);
       }
     };
 
@@ -38,12 +41,12 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 p-4">
       <div className="max-w-md mx-auto">
-        {(status === 'ringing' || status === 'connecting' || status === 'active') ? (
+        {(status === CallStatus.RINGING || status === CallStatus.CONNECTING || status === CallStatus.ACTIVE) ? (
           <VideoCall />
         ) : (
           <DialerTabs />
         )}
-        {(status === 'ringing' || status === 'connecting' || status === 'active') && (
+        {(status === CallStatus.RINGING || status === CallStatus.CONNECTING || status === CallStatus.ACTIVE) && (
           <div className="mt-4">
             <CallControls />
           </div>
