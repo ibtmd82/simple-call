@@ -1,4 +1,16 @@
-export type CallStatus = 'idle' | 'connecting' | 'ringing' | 'active' | 'ended' | 'failed';
+export enum CallStatus {
+  IDLE = 'idle',
+  CONNECTING = 'connecting',
+  CONNECTED = 'connected',
+  REGISTERED = 'registered',
+  UNREGISTERED = 'unregistered',
+  CALLING = 'calling',
+  INCOMING = 'incoming',
+  RINGING = 'ringing',
+  ACTIVE = 'active',
+  ENDED = 'ended',
+  FAILED = 'failed',
+}
 
 export interface MediaDeviceInfo {
   deviceId: string;
