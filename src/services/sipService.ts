@@ -1,4 +1,4 @@
-import { UserAgent, Session, UserAgentDelegate, Registerer } from 'sip.js';
+import { UserAgent, Session, UserAgentDelegate, Registerer, URI } from 'sip.js';
 import { CallStatus, SipConfig } from '../types/index';
 
 export class SIPService {
@@ -17,12 +17,26 @@ export class SIPService {
   }
 
   private setupEventListeners() {
-    // Event listeners will be set up when UA is created
+    // Các trình nghe sự kiện sẽ được thiết lập khi tạo UA
   }
 
   async connect(config: SipConfig): Promise<void> {
     try {
-      console.log('Connecting to SIP server with config:', {
+      // Kiểm tra đầu vào cấu hình
+      if (!config.uri || !config.domain || !config.wsServer) {
+        throw new Error('Cấu hình SIP không hợp lệ: yêu cầu uri, domain và wsServer');
+      }
+      if (!config.uri.match(/^[a-zA-Z0-9._%+-]+$/)) {
+        throw new Error('URI SIP không hợp lệ: chỉ được chứa ký tự chữ cái, số, dấu chấm, dấu gạch dưới hoặc dấu gạch ngang');
+      }
+      if (!config.domain.match(/^[a-zA-Z0-9.-]+$/)) {
+        throw new Error('Tên miền SIP không hợp lệ: chỉ được chứa ký tự chữ cái, số, dấu chấm hoặc dấu gạch ngang');
+      }
+      if (!config.wsServer.match(/^wss?:\/\/[a-zA-Z0-9.-]+(:[0-9]+)?$/)) {
+        throw new Error('wsServer không hợp lệ: phải là URL WebSocket hợp lệ (wss:// hoặc ws://)');
+      }
+
+      console.log('Đang kết nối đến máy chủ SIP với cấu hình:', {
         server: config.wsServer,
         username: config.uri,
         domain: config.domain,
@@ -31,7 +45,7 @@ export class SIPService {
       });
 
       if (this.ua) {
-        console.log('Disconnecting existing UA before reconnecting...');
+        console.log('Ngắt kết nối UA hiện tại trước khi kết nối lại...');
         this.isExplicitlyDisconnecting = true;
         if (this.registerer) {
           await this.registerer.unregister();
@@ -42,38 +56,38 @@ export class SIPService {
       }
 
       const uaConfig = {
-        uri: `sip:${config.uri}@${config.domain}`,
+        uri: new URI('sip', config.uri, config.domain), // Tạo đối tượng URI
         transportOptions: {
           server: config.wsServer,
         },
         authorizationUser: config.uri,
-        password: config.password,
+        password: config.password || '',
         displayName: config.displayName || config.uri,
         register: false,
         registerExpires: 600,
-        sessionTimers: !config.disableDtls,
-        rtcpMuxPolicy: 'require',
-        callId: config.callId || undefined,
+        sessionDescriptionHandler: !config.disableDtls,
+        userAgentString: 'SIP.js/0.21.2',
       };
 
-      console.log('Creating UA with config:', {
+      console.log('Tạo UA với cấu hình:', {
         ...uaConfig,
-        password: '[HIDDEN]',
+        uri: uaConfig.uri.toString(),
+        password: '[ẨN]',
       });
 
       this.ua = new UserAgent(uaConfig);
 
       this.ua.delegate = {
         onInvite: (session: Session) => {
-          console.log('New RTC session:', session);
+          console.log('Phiên RTC mới:', session);
           this.handleIncomingCall(session);
         },
         onConnect: () => {
-          console.log('Connected to SIP server');
+          console.log('Đã kết nối đến máy chủ SIP');
           this.onStateChange?.(CallStatus.CONNECTING);
         },
         onDisconnect: () => {
-          console.log('Disconnected from SIP server');
+          console.log('Đã ngắt kết nối khỏi máy chủ SIP');
           if (!this.isExplicitlyDisconnecting) {
             this.onStateChange?.(CallStatus.ENDED);
           }
@@ -85,7 +99,7 @@ export class SIPService {
       });
 
       this.registerer.stateChange.addListener((state) => {
-        console.log(`Registerer state changed: ${state}`);
+        console.log(`Trạng thái Registerer thay đổi: ${state}`);
         switch (state) {
           case 'Registered':
             this.isReregistering = false;
@@ -93,16 +107,16 @@ export class SIPService {
             break;
           case 'Unregistered':
             if (!this.isExplicitlyDisconnecting && !this.isReregistering) {
-              console.log('Unregistered from SIP server');
+              console.log('Đã hủy đăng ký khỏi máy chủ SIP');
               this.onStateChange?.(CallStatus.UNREGISTERED);
-              console.log('Unexpected unregistration, attempting to re-register...');
+              console.log('Hủy đăng ký không mong muốn, đang thử đăng ký lại...');
               this.isReregistering = true;
               setTimeout(() => {
                 if (this.registerer && !this.isExplicitlyDisconnecting) {
                   try {
                     this.registerer.register();
                   } catch (error) {
-                    console.error('Re-registration failed:', error);
+                    console.error('Đăng ký lại thất bại:', error);
                     this.isReregistering = false;
                     this.onStateChange?.(CallStatus.FAILED);
                   }
@@ -121,14 +135,14 @@ export class SIPService {
       this.isExplicitlyDisconnecting = false;
 
     } catch (error) {
-      console.error('Failed to connect to SIP server:', error);
+      console.error('Kết nối đến máy chủ SIP thất bại:', error);
       this.onStateChange?.(CallStatus.FAILED);
       throw error;
     }
   }
 
   async disconnect(): Promise<void> {
-    console.log('Disconnecting from SIP server...');
+    console.log('Ngắt kết nối khỏi máy chủ SIP...');
     this.isExplicitlyDisconnecting = true;
 
     if (this.currentSession) {
@@ -152,11 +166,11 @@ export class SIPService {
 
   async makeCall(number: string, video: boolean = false): Promise<void> {
     if (!this.ua) {
-      throw new Error('Not connected to SIP server');
+      throw new Error('Chưa kết nối đến máy chủ SIP');
     }
 
     try {
-      console.log(`Making ${video ? 'video' : 'audio'} call to:`, number);
+      console.log(`Thực hiện cuộc gọi ${video ? 'video' : 'âm thanh'} đến:`, number);
 
       const constraints = {
         audio: true,
@@ -164,7 +178,7 @@ export class SIPService {
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('Got local stream:', this.localStream);
+      console.log('Đã lấy luồng cục bộ:', this.localStream);
 
       const options = {
         mediaConstraints: constraints,
@@ -182,14 +196,14 @@ export class SIPService {
         },
       };
 
-      const session = this.ua.call(`sip:${number}@${this.ua.configuration.uri.host}`, options);
+      const session = this.ua.invite(`sip:${number}@${this.ua.configuration.uri.host}`, options);
       this.currentSession = session;
       this.setupSessionEventListeners(session);
 
       this.onStateChange?.(CallStatus.CALLING);
 
     } catch (error) {
-      console.error('Failed to make call:', error);
+      console.error('Thực hiện cuộc gọi thất bại:', error);
       this.cleanup();
       this.onStateChange?.(CallStatus.FAILED);
       throw error;
@@ -197,7 +211,7 @@ export class SIPService {
   }
 
   private handleIncomingCall(session: Session): void {
-    console.log('Incoming call from:', session.remoteIdentity.uri.user);
+    console.log('Cuộc gọi đến từ:', session.remoteIdentity.uri.user);
     this.currentSession = session;
     this.setupSessionEventListeners(session);
     this.onStateChange?.(CallStatus.INCOMING);
@@ -205,11 +219,11 @@ export class SIPService {
 
   async answerCall(video: boolean = false): Promise<void> {
     if (!this.currentSession) {
-      throw new Error('No incoming call to answer');
+      throw new Error('Không có cuộc gọi đến để trả lời');
     }
 
     try {
-      console.log(`Answering call with ${video ? 'video' : 'audio'}`);
+      console.log(`Trả lời cuộc gọi với ${video ? 'video' : 'âm thanh'}`);
 
       const constraints = {
         audio: true,
@@ -217,7 +231,7 @@ export class SIPService {
       };
 
       this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-      console.log('Got local stream for answer:', this.localStream);
+      console.log('Đã lấy luồng cục bộ để trả lời:', this.localStream);
 
       const options = {
         mediaConstraints: constraints,
@@ -229,16 +243,13 @@ export class SIPService {
           ],
           rtcpMuxPolicy: 'require',
         },
-        answerOptions: {
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: video,
-        },
       };
 
-      this.currentSession.answer(options);
+      await this.currentSession.accept(options);
+      this.onStateChange?.(CallStatus.ACTIVE);
 
     } catch (error) {
-      console.error('Failed to answer call:', error);
+      console.error('Trả lời cuộc gọi thất bại:', error);
       this.cleanup();
       this.onStateChange?.(CallStatus.FAILED);
       throw error;
@@ -247,7 +258,7 @@ export class SIPService {
 
   rejectCall(): void {
     if (this.currentSession) {
-      console.log('Rejecting call');
+      console.log('Từ chối cuộc gọi');
       this.currentSession.terminate();
       this.onStateChange?.(CallStatus.ENDED);
     }
@@ -255,81 +266,67 @@ export class SIPService {
 
   hangup(): void {
     if (this.currentSession) {
-      console.log('Hanging up call');
+      console.log('Ngắt cuộc gọi');
       this.currentSession.terminate();
       this.onStateChange?.(CallStatus.ENDED);
     }
   }
 
   private setupSessionEventListeners(session: Session): void {
-    console.log('Setting up session event listeners');
+    console.log('Thiết lập trình nghe sự kiện phiên');
 
-    session.on('progress', () => {
-      console.log('Session in progress...');
-      this.onStateChange?.(CallStatus.RINGING);
-    });
-
-    session.on('accepted', () => {
-      console.log('Session accepted');
-      this.onStateChange?.(CallStatus.ACTIVE);
-      this.setupPeerConnectionListeners(session);
-    });
-
-    session.on('confirmed', () => {
-      console.log('Session confirmed');
-      this.onStateChange?.(CallStatus.ACTIVE);
-      this.setupPeerConnectionListeners(session);
-    });
-
-    session.on('ended', () => {
-      console.log('Session ended');
-      this.cleanup();
-      this.onStateChange?.(CallStatus.ENDED);
-    });
-
-    session.on('failed', (e: any) => {
-      console.error('Session failed:', e);
-      this.cleanup();
-      this.onStateChange?.(CallStatus.FAILED);
-    });
-
-    // Handle peer connection events
-    session.on('peerconnection', (e: any) => {
-      console.log('Peer connection created:', e);
-      this.setupPeerConnectionListeners(session);
+    session.stateChange.addListener((state) => {
+      console.log(`Trạng thái phiên thay đổi: ${state}`);
+      switch (state) {
+        case 'Established':
+          console.log('Phiên đã được thiết lập');
+          this.onStateChange?.(CallStatus.ACTIVE);
+          this.setupPeerConnectionListeners(session);
+          break;
+        case 'Establishing':
+          console.log('Phiên đang tiến hành...');
+          this.onStateChange?.(CallStatus.RINGING);
+          break;
+        case 'Terminated':
+          console.log('Phiên đã kết thúc');
+          this.cleanup();
+          this.onStateChange?.(CallStatus.ENDED);
+          break;
+      }
     });
   }
 
   private setupPeerConnectionListeners(session: Session): void {
     const pc = session.sessionDescriptionHandler?.peerConnection;
     if (!pc) {
-      console.warn('No peer connection available');
+      console.warn('Không có kết nối ngang hàng');
       return;
     }
 
-    console.log('Setting up peer connection listeners');
+    console.log('Thiết lập trình nghe kết nối ngang hàng');
 
     pc.ontrack = (event: RTCTrackEvent) => {
-      console.log('Received remote track:', event);
+      console.log('Nhận được track từ xa:', event);
       if (event.streams && event.streams[0]) {
-        console.log('Setting remote stream:', event.streams[0]);
+        console.log('Thiết lập luồng từ xa:', event.streams[0]);
         this.remoteStream = event.streams[0];
         this.onRemoteStreamChange?.(this.remoteStream);
         event.streams[0].getTracks().forEach(track => {
-          console.log(`Remote ${track.kind} track:`, track);
+          console.log(`Track từ xa ${track.kind}:`, track);
         });
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log('Peer connection state:', pc.connectionState);
+      console.log('Trạng thái kết nối ngang hàng:', pc.connectionState);
       if (pc.connectionState === 'connected') {
+        this.onStateChange?.(CallStatus.ACTIVE);
         this.checkForRemoteStreams(pc);
       }
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log('ICE connection state:', pc.iceConnectionState);
+      console.log('Trạng thái kết nối ICE:', pc.iceConnectionState);
       if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
         this.checkForRemoteStreams(pc);
       }
@@ -341,32 +338,32 @@ export class SIPService {
   }
 
   private checkForRemoteStreams(pc: RTCPeerConnection): void {
-    console.log('Checking for remote streams...');
+    console.log('Kiểm tra luồng từ xa...');
 
     const remoteStreams = pc.getRemoteStreams?.() || [];
-    console.log('Remote streams found:', remoteStreams.length);
+    console.log('Tìm thấy luồng từ xa:', remoteStreams.length);
 
     if (remoteStreams.length > 0 && !this.remoteStream) {
-      console.log('Setting remote stream from getRemoteStreams:', remoteStreams[0]);
+      console.log('Thiết lập luồng từ xa từ getRemoteStreams:', remoteStreams[0]);
       this.remoteStream = remoteStreams[0];
       this.onRemoteStreamChange?.(this.remoteStream);
       remoteStreams[0].getTracks().forEach(track => {
-        console.log(`Remote ${track.kind} track from getRemoteStreams:`, track);
+        console.log(`Track từ xa ${track.kind} từ getRemoteStreams:`, track);
       });
     }
 
     const receivers = pc.getReceivers();
-    console.log('Receivers found:', receivers.length);
+    console.log('Tìm thấy bộ nhận:', receivers.length);
 
     receivers.forEach((receiver, index) => {
       if (receiver.track) {
-        console.log(`Receiver ${index} track:`, receiver.track.kind, receiver.track);
+        console.log(`Bộ nhận ${index} track:`, receiver.track.kind, receiver.track);
       }
     });
   }
 
   private cleanup(): void {
-    console.log('Cleaning up call resources...');
+    console.log('Dọn dẹp tài nguyên cuộc gọi...');
 
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
@@ -383,7 +380,6 @@ export class SIPService {
     this.currentSession = null;
   }
 
-  // Getters
   getLocalStream(): MediaStream | null {
     return this.localStream;
   }
@@ -404,7 +400,6 @@ export class SIPService {
     return this.registerer?.state === 'Registered' || false;
   }
 
-  // Event handlers
   onStateChanged(callback: (state: CallStatus) => void): void {
     this.onStateChange = callback;
   }
@@ -413,48 +408,44 @@ export class SIPService {
     this.onRemoteStreamChange = callback;
   }
 
-  // DTMF support
   sendDTMF(tone: string): void {
-    if (this.currentSession && this.currentSession.state === 'established') {
-      console.log('Sending DTMF tone:', tone);
-      this.currentSession.sendDTMF(tone);
+    if (this.currentSession && this.currentSession.state === 'Established') {
+      console.log('Gửi âm DTMF:', tone);
+      this.currentSession.dtmf(tone);
     } else {
-      console.warn('Cannot send DTMF: no active session');
+      console.warn('Không thể gửi DTMF: không có phiên hoạt động');
     }
   }
 
-  // Call transfer
   transfer(target: string): void {
-    if (this.currentSession && this.currentSession.state === 'established') {
-      console.log('Transferring call to:', target);
+    if (this.currentSession && this.currentSession.state === 'Established') {
+      console.log('Chuyển cuộc gọi đến:', target);
       this.currentSession.refer(target);
     } else {
-      console.warn('Cannot transfer: no active session');
+      console.warn('Không thể chuyển: không có phiên hoạt động');
     }
   }
 
-  // Hold/Unhold
   hold(): void {
-    if (this.currentSession && this.currentSession.state === 'established') {
-      console.log('Putting call on hold');
+    if (this.currentSession && this.currentSession.state === 'Established') {
+      console.log('Đặt cuộc gọi vào trạng thái giữ');
       this.currentSession.hold();
     }
   }
 
   unhold(): void {
-    if (this.currentSession && this.currentSession.state === 'established') {
-      console.log('Resuming call from hold');
+    if (this.currentSession && this.currentSession.state === 'Established') {
+      console.log('Tiếp tục cuộc gọi từ trạng thái giữ');
       this.currentSession.unhold();
     }
   }
 
-  // Mute/Unmute
   mute(): void {
     if (this.localStream) {
       this.localStream.getAudioTracks().forEach(track => {
         track.enabled = false;
       });
-      console.log('Muted local audio');
+      console.log('Đã tắt âm thanh cục bộ');
     }
   }
 
@@ -463,17 +454,16 @@ export class SIPService {
       this.localStream.getAudioTracks().forEach(track => {
         track.enabled = true;
       });
-      console.log('Unmuted local audio');
+      console.log('Đã bật âm thanh cục bộ');
     }
   }
 
-  // Video control
   enableVideo(): void {
     if (this.localStream) {
       this.localStream.getVideoTracks().forEach(track => {
         track.enabled = true;
       });
-      console.log('Enabled local video');
+      console.log('Đã bật video cục bộ');
     }
   }
 
@@ -482,7 +472,7 @@ export class SIPService {
       this.localStream.getVideoTracks().forEach(track => {
         track.enabled = false;
       });
-      console.log('Disabled local video');
+      console.log('Đã tắt video cục bộ');
     }
   }
 }
