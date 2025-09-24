@@ -23,6 +23,13 @@ export class SIPService {
   async connect(config: SipConfig): Promise<void> {
     try {
       // Kiểm tra đầu vào cấu hình
+      console.log('Đang kết nối đến máy chủ SIP với cấu hình:', {
+        server: config.wsServer,
+        username: config.uri,
+        domain: config.domain,
+        callId: config.callId,
+        disableDtls: config.disableDtls,
+      });
       if (!config.uri || !config.domain || !config.wsServer) {
         throw new Error('Cấu hình SIP không hợp lệ: yêu cầu uri, domain và wsServer');
       }
