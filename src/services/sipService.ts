@@ -23,24 +23,13 @@ export class SIPService {
   async connect(config: SipConfig): Promise<void> {
     try {
       // Kiểm tra đầu vào cấu hình
-      console.log('Đang kết nối đến máy chủ SIP với cấu hình:', {
-        server: config.wsServer,
-        username: config.uri,
-        domain: config.domain,
-        callId: config.callId,
-        disableDtls: config.disableDtls,
-      });
       if (!config.uri || !config.domain || !config.wsServer) {
+        console.error('Cấu hình SIP không hợp lệ:', {
+          uri: config.uri,
+          domain: config.domain,
+          wsServer: config.wsServer,
+        });
         throw new Error('Cấu hình SIP không hợp lệ: yêu cầu uri, domain và wsServer');
-      }
-      if (!config.uri.match(/^[a-zA-Z0-9._%+-]+$/)) {
-        throw new Error('URI SIP không hợp lệ: chỉ được chứa ký tự chữ cái, số, dấu chấm, dấu gạch dưới hoặc dấu gạch ngang');
-      }
-      if (!config.domain.match(/^[a-zA-Z0-9.-]+$/)) {
-        throw new Error('Tên miền SIP không hợp lệ: chỉ được chứa ký tự chữ cái, số, dấu chấm hoặc dấu gạch ngang');
-      }
-      if (!config.wsServer.match(/^wss?:\/\/[a-zA-Z0-9.-]+(:[0-9]+)?$/)) {
-        throw new Error('wsServer không hợp lệ: phải là URL WebSocket hợp lệ (wss:// hoặc ws://)');
       }
 
       console.log('Đang kết nối đến máy chủ SIP với cấu hình:', {
@@ -49,14 +38,17 @@ export class SIPService {
         domain: config.domain,
         callId: config.callId,
         disableDtls: config.disableDtls,
+        password: config.password ? '[ẨN]' : 'Không cung cấp',
       });
 
       if (this.ua) {
         console.log('Ngắt kết nối UA hiện tại trước khi kết nối lại...');
         this.isExplicitlyDisconnecting = true;
         if (this.registerer) {
+          console.log('Đang hủy đăng ký Registerer...');
           await this.registerer.unregister();
         }
+        console.log('Đang dừng UserAgent...');
         await this.ua.stop();
         this.ua = null;
         this.registerer = null;
@@ -137,8 +129,11 @@ export class SIPService {
         }
       });
 
+      console.log('Bắt đầu khởi động UserAgent...');
       await this.ua.start();
+      console.log('Bắt đầu đăng ký Registerer...');
       await this.registerer.register();
+      console.log('Đã đăng ký thành công');
       this.isExplicitlyDisconnecting = false;
 
     } catch (error) {
