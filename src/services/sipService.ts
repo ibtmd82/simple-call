@@ -64,7 +64,7 @@ export class SIPService {
         displayName: config.displayName || config.uri,
         register: false,
         registerExpires: 600,
-        sessionDescriptionHandler: !config.disableDtls,
+        sessionDescriptionHandlerFactoryOptions: { disableDtls: config.disableDtls },
         userAgentString: 'SIP.js/0.21.2',
       };
 
