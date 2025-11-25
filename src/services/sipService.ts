@@ -77,6 +77,8 @@ export class SIPService {
         userAgentString: 'WebRTC-SIP-Client/1.0',
         traceSip: false,
         logLevel: 'error',
+      }
+      )
 
       this.ua = new UserAgent(uaConfig);
 
