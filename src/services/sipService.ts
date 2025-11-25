@@ -58,6 +58,9 @@ export class SIPService {
         uri: new URI('sip', config.uri, config.domain), // Tạo đối tượng URI
         transportOptions: {
           server: config.wsServer,
+          connectionTimeout: 10000,
+          maxReconnectionAttempts: 3,
+          reconnectionTimeout: 4000,
         },
         authorizationUser: config.uri,
         password: config.password || '',
@@ -71,8 +74,9 @@ export class SIPService {
       console.log('Tạo UA với cấu hình:', {
         ...uaConfig,
         uri: uaConfig.uri.toString(),
-        password: '[ẨN]',
-      });
+        userAgentString: 'WebRTC-SIP-Client/1.0',
+        traceSip: false,
+        logLevel: 'error',
 
       this.ua = new UserAgent(uaConfig);
 
@@ -83,7 +87,7 @@ export class SIPService {
         },
         onConnect: () => {
           console.log('Đã kết nối đến máy chủ SIP');
-          this.onStateChange?.(CallStatus.CONNECTING);
+          this.onStateChange?.(CallStatus.REGISTERED);
         },
         onDisconnect: () => {
           console.log('Đã ngắt kết nối khỏi máy chủ SIP');
@@ -91,10 +95,13 @@ export class SIPService {
             this.onStateChange?.(CallStatus.ENDED);
           }
         },
+        onTransportError: (error: Error) => {
+          console.error('Transport error:', error);
+          this.onStateChange?.(CallStatus.FAILED);
+        },
       } as UserAgentDelegate;
 
       this.registerer = new Registerer(this.ua, {
-        expires: 600,
       });
 
       this.registerer.stateChange.addListener((state) => {
@@ -131,6 +138,29 @@ export class SIPService {
 
       console.log('Bắt đầu khởi động UserAgent...');
       await this.ua.start();
+      
+      // Wait for connection before registering
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Connection timeout'));
+        }, 10000);
+        
+        if (this.ua?.isConnected()) {
+          clearTimeout(timeout);
+          resolve();
+        } else {
+          const checkConnection = () => {
+            if (this.ua?.isConnected()) {
+              clearTimeout(timeout);
+              resolve();
+            } else {
+              setTimeout(checkConnection, 100);
+            }
+          };
+          checkConnection();
+        }
+      });
+      
       console.log('Bắt đầu đăng ký Registerer...');
       await this.registerer.register();
       console.log('Đã đăng ký thành công');
@@ -139,7 +169,16 @@ export class SIPService {
     } catch (error) {
       console.error('Kết nối đến máy chủ SIP thất bại:', error);
       this.onStateChange?.(CallStatus.FAILED);
-      throw error;
+      
+      // Provide more specific error messages
+      if (error instanceof Error) {
+        if (error.message.includes('WebSocket closed') || error.message.includes('1006')) {
+          throw new Error('Không thể kết nối đến máy chủ SIP. Vui lòng kiểm tra:\n1. URL WebSocket Server có đúng không\n2. Máy chủ SIP có đang hoạt động không\n3. Chứng chỉ SSL có hợp lệ không (nếu dùng wss://)');
+        } else if (error.message.includes('timeout')) {
+          throw new Error('Kết nối bị timeout. Vui lòng kiểm tra kết nối mạng và thử lại.');
+        }
+      }
+      throw new Error(`Lỗi kết nối: ${error instanceof Error ? error.message : 'Lỗi không xác định'}`);
     }
   }
 
