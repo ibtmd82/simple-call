@@ -58,13 +58,20 @@ export class SIPService {
         uri: new URI('sip', config.uri, config.domain), // Tạo đối tượng URI
         transportOptions: {
           server: config.wsServer,
+          traceSip: true,
         },
         authorizationUser: config.uri,
         password: config.password || '',
         displayName: config.displayName || config.uri,
-        register: false,
+        register: true,
         registerExpires: 600,
-        sessionDescriptionHandlerFactoryOptions: { disableDtls: config.disableDtls },
+        sessionDescriptionHandlerFactoryOptions: { 
+          disableDtls: config.disableDtls || false,
+          constraints: {
+            audio: true,
+            video: false
+          }
+        },
         userAgentString: 'SIP.js/0.21.2',
       };
 
@@ -95,6 +102,7 @@ export class SIPService {
 
       this.registerer = new Registerer(this.ua, {
         expires: 600,
+        extraHeaders: [],
       });
 
       this.registerer.stateChange.addListener((state) => {
