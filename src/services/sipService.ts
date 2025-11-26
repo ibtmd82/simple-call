@@ -172,10 +172,21 @@ export class SIPService {
       console.error('Kết nối đến máy chủ SIP thất bại:', error);
       this.onStateChange?.(CallStatus.FAILED);
       
+      // Clean up on connection failure
+      if (this.ua) {
+        try {
+          await this.ua.stop();
+        } catch (stopError) {
+          console.error('Error stopping UA after connection failure:', stopError);
+        }
+        this.ua = null;
+      }
+      this.registerer = null;
+      
       // Provide more specific error messages
       if (error instanceof Error) {
         if (error.message.includes('WebSocket closed') || error.message.includes('1006')) {
-          throw new Error('Không thể kết nối đến máy chủ SIP. Vui lòng kiểm tra:\n1. URL WebSocket Server có đúng không\n2. Máy chủ SIP có đang hoạt động không\n3. Chứng chỉ SSL có hợp lệ không (nếu dùng wss://)');
+          throw new Error('Không thể kết nối đến máy chủ SIP. Vui lòng kiểm tra:\n1. URL WebSocket Server có đúng không (hiện tại: ' + config.wsServer + ')\n2. Máy chủ SIP có đang hoạt động không\n3. Firewall có chặn kết nối không\n4. Chứng chỉ SSL có hợp lệ không (nếu dùng wss://)');
         } else if (error.message.includes('timeout')) {
           throw new Error('Kết nối bị timeout. Vui lòng kiểm tra kết nối mạng và thử lại.');
         }
