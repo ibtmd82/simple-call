@@ -109,15 +109,16 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         return;
       }
 
-      await sipService.connect(formData);
+      // Use the dedicated test connection method
+      await sipService.testConnection(formData);
       setTestResult({
         success: true,
-        message: 'Connection test successful!'
+        message: 'Connection and registration test successful!'
       });
     } catch (error) {
       setTestResult({
         success: false,
-        message: `Connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        message: `Test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       });
     } finally {
       setIsTesting(false);

@@ -462,6 +462,115 @@ export class SIPService {
     this.onRemoteStreamChange = callback;
   }
 
+  async testConnection(config: SipConfig): Promise<void> {
+    try {
+      console.log('Testing SIP connection with config:', {
+        domain: config.domain,
+        uri: config.uri,
+        wsServer: config.wsServer,
+        hasPassword: !!config.password,
+      });
+
+      // Create a temporary UserAgent for testing
+      const testUaConfig = {
+        uri: new URI('sip', config.uri, config.domain),
+        transportOptions: {
+          server: config.wsServer,
+          connectionTimeout: 15000,
+          maxReconnectionAttempts: 1,
+          reconnectionTimeout: 1000,
+        },
+        authorizationUser: config.uri,
+        password: config.password || '',
+        displayName: config.displayName || config.uri,
+        register: false, // Don't auto-register for test
+        registerExpires: 300,
+        sessionDescriptionHandlerFactoryOptions: {
+          constraints: {
+            audio: true,
+            video: false,
+          },
+          disableDtls: config.disableDtls || false,
+        },
+        userAgentString: 'WebRTC-SIP-Client/1.0',
+        traceSip: false,
+        logLevel: 'error',
+      };
+
+      const testUa = new UserAgent(testUaConfig);
+      let testRegisterer: Registerer | null = null;
+
+      try {
+        // Start the test UserAgent
+        await testUa.start();
+
+        // Wait for connection
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Connection timeout after 15 seconds'));
+          }, 15000);
+
+          const checkConnection = () => {
+            if (testUa.isConnected()) {
+              clearTimeout(timeout);
+              resolve();
+            } else {
+              setTimeout(checkConnection, 100);
+            }
+          };
+          checkConnection();
+        });
+
+        console.log('Test connection established, attempting registration...');
+
+        // Create and configure registerer for test
+        testRegisterer = new Registerer(testUa, {
+          expires: 300,
+        });
+
+        // Test registration
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Registration timeout after 10 seconds'));
+          }, 10000);
+
+          const stateChangeHandler = (state: any) => {
+            console.log(`Test registration state: ${state}`);
+            if (state === 'Registered') {
+              clearTimeout(timeout);
+              testRegisterer!.stateChange.removeListener(stateChangeHandler);
+              resolve();
+            } else if (state === 'Terminated') {
+              clearTimeout(timeout);
+              testRegisterer!.stateChange.removeListener(stateChangeHandler);
+              reject(new Error('Registration terminated'));
+            }
+          };
+
+          testRegisterer!.stateChange.addListener(stateChangeHandler);
+          testRegisterer!.register().catch(reject);
+        });
+
+        console.log('Test registration successful');
+
+        // Clean up test registration
+        if (testRegisterer) {
+          await testRegisterer.unregister();
+        }
+
+      } finally {
+        // Always clean up the test UserAgent
+        if (testUa) {
+          await testUa.stop();
+        }
+      }
+
+    } catch (error) {
+      console.error('Test connection failed:', error);
+      throw error;
+    }
+  }
+
   sendDTMF(tone: string): void {
     if (this.currentSession && this.currentSession.state === 'Established') {
       console.log('Gửi âm DTMF:', tone);
