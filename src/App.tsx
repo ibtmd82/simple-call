@@ -14,19 +14,22 @@ function App() {
   React.useEffect(() => {
     const initializeSip = async () => {
       try {
+        // Always load fresh config from environment on app start
         const config = getSipConfigFromEnv();
+        console.log('Loading SIP config from environment:', {
+          domain: config.domain,
+          uri: config.uri,
+          wsServer: config.wsServer,
+          callId: config.callId,
+          disableDtls: config.disableDtls,
+          hasPassword: !!config.password,
+        });
+        
         if (config.domain && config.uri && config.password && config.wsServer) {
-          console.log('Auto-initializing SIP service with saved configuration:', {
-            domain: config.domain,
-            uri: config.uri,
-            wsServer: config.wsServer,
-            callId: config.callId,
-            disableDtls: config.disableDtls,
-            hasPassword: !!config.password,
-          });
+          console.log('Auto-initializing SIP service with environment configuration');
           await sipService.connect(config);
         } else {
-          console.log('No saved SIP configuration found. User must configure manually in Settings.');
+          console.log('Incomplete SIP configuration in environment. User must configure manually in Settings.');
           setStatus(CallStatus.IDLE);
         }
       } catch (error) {

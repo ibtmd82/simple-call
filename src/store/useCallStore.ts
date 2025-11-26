@@ -1,7 +1,21 @@
 import { create } from 'zustand';
 import { CallStatus, CallState } from '../types/index';
 
-export const useCallStore = create<CallState>((set) => ({
+interface CallActions {
+  setStatus: (status: CallStatus) => void;
+  setLocalStream: (stream: MediaStream | null) => void;
+  setRemoteStream: (stream: MediaStream | null) => void;
+  setDuration: (duration: number) => void;
+  toggleMute: () => void;
+  toggleVideo: () => void;
+  setAudioInput: (deviceId: string | null) => void;
+  setAudioOutput: (deviceId: string | null) => void;
+  setVideoInput: (deviceId: string | null) => void;
+  setError: (error: string | null) => void;
+  addCallHistory: (item: any) => void;
+}
+
+export const useCallStore = create<CallState & CallActions>((set) => ({
   status: CallStatus.IDLE,
   duration: 0,
   isMuted: false,
@@ -17,8 +31,8 @@ export const useCallStore = create<CallState>((set) => ({
   setLocalStream: (stream) => set({ localStream: stream }),
   setRemoteStream: (stream) => set({ remoteStream: stream }),
   setDuration: (duration) => set({ duration }),
-  setMuted: (isMuted) => set({ isMuted }),
-  setVideoEnabled: (isVideoEnabled) => set({ isVideoEnabled }),
+  toggleMute: () => set((state) => ({ isMuted: !state.isMuted })),
+  toggleVideo: () => set((state) => ({ isVideoEnabled: !state.isVideoEnabled })),
   setAudioInput: (deviceId) => set({ selectedAudioInput: deviceId }),
   setAudioOutput: (deviceId) => set({ selectedAudioOutput: deviceId }),
   setVideoInput: (deviceId) => set({ selectedVideoInput: deviceId }),

@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
 import { SipConfig } from '../types';
 
 interface SettingsState {
@@ -19,142 +18,82 @@ const defaultSipConfig: SipConfig = {
   disableDtls: false,
 };
 
-// Helper function to get config from localStorage, session storage, or environment
+// Helper function to get config from environment variables
 const getConfigFromEnv = (): SipConfig => {
-  // Try localStorage first (for persistent settings)
-  if (typeof window !== 'undefined') {
-    const localDomain = localStorage.getItem('VITE_SIP_DOMAIN');
-    const localUri = localStorage.getItem('VITE_SIP_URI');
-    const localPassword = localStorage.getItem('VITE_SIP_PASSWORD');
-    const localWsServer = localStorage.getItem('VITE_SIP_WS_SERVER');
-    const localCallId = localStorage.getItem('VITE_SIP_CALL_ID');
-    const localDisableDtls = localStorage.getItem('VITE_SIP_DISABLE_DTLS');
-    const localConfigured = localStorage.getItem('VITE_SIP_CONFIGURED');
-    
-    // Only use localStorage config if it was explicitly saved by user
-    if (localConfigured === 'true' && (localDomain || localUri || localPassword || localWsServer)) {
-      return {
-        domain: localDomain || '',
-        uri: localUri || '',
-        password: localPassword || '',
-        wsServer: localWsServer || '',
-        callId: localCallId || '',
-        disableDtls: localDisableDtls === 'true',
-      };
-    }
-  }
-  
-  // Try session storage (for runtime updates)
-  if (typeof window !== 'undefined') {
-    const sessionDomain = sessionStorage.getItem('VITE_SIP_DOMAIN');
-    const sessionUri = sessionStorage.getItem('VITE_SIP_URI');
-    const sessionPassword = sessionStorage.getItem('VITE_SIP_PASSWORD');
-    const sessionWsServer = sessionStorage.getItem('VITE_SIP_WS_SERVER');
-    const sessionCallId = sessionStorage.getItem('VITE_SIP_CALL_ID');
-    const sessionDisableDtls = sessionStorage.getItem('VITE_SIP_DISABLE_DTLS');
-    const sessionConfigured = sessionStorage.getItem('VITE_SIP_CONFIGURED');
-    
-    // Only use session storage config if it was explicitly saved by user
-    if (sessionConfigured === 'true' && (sessionDomain || sessionUri || sessionPassword || sessionWsServer)) {
-      return {
-        domain: sessionDomain || '',
-        uri: sessionUri || '',
-        password: sessionPassword || '',
-        wsServer: sessionWsServer || '',
-        callId: sessionCallId || '',
-        disableDtls: sessionDisableDtls === 'true',
-      };
-    }
-  }
-  
-  // Don't use environment variables for auto-registration
-  // Only return empty config so user must configure manually
+  // Load configuration from environment variables
   return {
-    domain: '',
-    uri: '',
-    password: '',
-    wsServer: '',
-    callId: '',
-    disableDtls: false,
+    domain: import.meta.env.VITE_SIP_DOMAIN || '',
+    uri: import.meta.env.VITE_SIP_URI || '',
+    password: import.meta.env.VITE_SIP_PASSWORD || '',
+    wsServer: import.meta.env.VITE_SIP_WS_SERVER || '',
+    callId: import.meta.env.VITE_SIP_CALL_ID || '',
+    disableDtls: import.meta.env.VITE_SIP_DISABLE_DTLS === 'true',
   };
 };
 
-export const useSettingsStore = create<SettingsState>()(
-  persist(
-    (set, get) => ({
-      sipConfig: getConfigFromEnv(), // Initialize with environment config
-      
-      updateSipConfig: (config: SipConfig) => {
-        set({ sipConfig: config });
-      },
-      
-      saveSipConfig: (config: SipConfig) => {
-        // Update the store
-        set({ sipConfig: config });
-        
-        // Save to localStorage for persistence across browser sessions
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('VITE_SIP_DOMAIN', config.domain);
-          localStorage.setItem('VITE_SIP_URI', config.uri);
-          localStorage.setItem('VITE_SIP_PASSWORD', config.password);
-          localStorage.setItem('VITE_SIP_WS_SERVER', config.wsServer);
-          localStorage.setItem('VITE_SIP_CALL_ID', config.callId || '');
-          localStorage.setItem('VITE_SIP_DISABLE_DTLS', config.disableDtls ? 'true' : 'false');
-          localStorage.setItem('VITE_SIP_CONFIGURED', 'true');
-        }
-        
-        // Update session storage for runtime use
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('VITE_SIP_DOMAIN', config.domain);
-          sessionStorage.setItem('VITE_SIP_URI', config.uri);
-          sessionStorage.setItem('VITE_SIP_PASSWORD', config.password);
-          sessionStorage.setItem('VITE_SIP_WS_SERVER', config.wsServer);
-          sessionStorage.setItem('VITE_SIP_CALL_ID', config.callId || '');
-          sessionStorage.setItem('VITE_SIP_DISABLE_DTLS', config.disableDtls ? 'true' : 'false');
-          sessionStorage.setItem('VITE_SIP_CONFIGURED', 'true');
-        }
-      },
-      
-      resetSipConfig: () => {
-        set({ sipConfig: defaultSipConfig });
-        
-        // Clear localStorage
-        if (typeof window !== 'undefined') {
-          localStorage.removeItem('VITE_SIP_DOMAIN');
-          localStorage.removeItem('VITE_SIP_URI');
-          localStorage.removeItem('VITE_SIP_PASSWORD');
-          localStorage.removeItem('VITE_SIP_WS_SERVER');
-          localStorage.removeItem('VITE_SIP_CALL_ID');
-          localStorage.removeItem('VITE_SIP_DISABLE_DTLS');
-          localStorage.removeItem('VITE_SIP_CONFIGURED');
-        }
-        
-        // Clear session storage
-        if (typeof window !== 'undefined') {
-          sessionStorage.removeItem('VITE_SIP_DOMAIN');
-          sessionStorage.removeItem('VITE_SIP_URI');
-          sessionStorage.removeItem('VITE_SIP_PASSWORD');
-          sessionStorage.removeItem('VITE_SIP_WS_SERVER');
-          sessionStorage.removeItem('VITE_SIP_CALL_ID');
-          sessionStorage.removeItem('VITE_SIP_DISABLE_DTLS');
-          sessionStorage.removeItem('VITE_SIP_CONFIGURED');
-        }
-        
-        // Load fresh config from environment
-        const envConfig = getConfigFromEnv();
-        set({ sipConfig: envConfig });
-      },
-      
-      getSipConfigFromEnv: () => {
-        return getConfigFromEnv();
-      },
-    }),
-    {
-      name: 'sip-settings',
-      // Persist all settings to localStorage for auto-registration
-      partialize: (state) => ({
-        sipConfig: state.sipConfig
-      }),
+// Helper function to save config to .env file (simulated by updating environment variables)
+const saveConfigToEnv = async (config: SipConfig): Promise<void> => {
+  // In a real application, this would make an API call to update the .env file
+  // For now, we'll update the environment variables in memory
+  if (typeof window !== 'undefined') {
+    // Update the environment variables
+    (import.meta.env as any).VITE_SIP_DOMAIN = config.domain;
+    (import.meta.env as any).VITE_SIP_URI = config.uri;
+    (import.meta.env as any).VITE_SIP_PASSWORD = config.password;
+    (import.meta.env as any).VITE_SIP_WS_SERVER = config.wsServer;
+    (import.meta.env as any).VITE_SIP_CALL_ID = config.callId || '';
+    (import.meta.env as any).VITE_SIP_DISABLE_DTLS = config.disableDtls ? 'true' : 'false';
+    
+    // Also save to localStorage as a backup
+    localStorage.setItem('VITE_SIP_DOMAIN', config.domain);
+    localStorage.setItem('VITE_SIP_URI', config.uri);
+    localStorage.setItem('VITE_SIP_PASSWORD', config.password);
+    localStorage.setItem('VITE_SIP_WS_SERVER', config.wsServer);
+    localStorage.setItem('VITE_SIP_CALL_ID', config.callId || '');
+    localStorage.setItem('VITE_SIP_DISABLE_DTLS', config.disableDtls ? 'true' : 'false');
+  }
+};
+
+export const useSettingsStore = create<SettingsState>((set, get) => ({
+  sipConfig: getConfigFromEnv(), // Initialize with environment config
+  
+  updateSipConfig: (config: SipConfig) => {
+    set({ sipConfig: config });
+  },
+  
+  saveSipConfig: async (config: SipConfig) => {
+    // Update the store
+    set({ sipConfig: config });
+    
+    // Save to .env file (simulated)
+    await saveConfigToEnv(config);
+  },
+  
+  resetSipConfig: () => {
+    // Reset to default config
+    const resetConfig = {
+      domain: '',
+      uri: '',
+      password: '',
+      wsServer: '',
+      callId: '',
+      disableDtls: false,
+    };
+    
+    set({ sipConfig: resetConfig });
+    
+    // Clear localStorage backup
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('VITE_SIP_DOMAIN');
+      localStorage.removeItem('VITE_SIP_URI');
+      localStorage.removeItem('VITE_SIP_PASSWORD');
+      localStorage.removeItem('VITE_SIP_WS_SERVER');
+      localStorage.removeItem('VITE_SIP_CALL_ID');
+      localStorage.removeItem('VITE_SIP_DISABLE_DTLS');
     }
-  )
-);
+  },
+  
+  getSipConfigFromEnv: () => {
+    return getConfigFromEnv();
+  },
+}));
