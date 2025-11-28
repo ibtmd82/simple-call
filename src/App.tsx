@@ -27,6 +27,9 @@ function App() {
         
         if (config.domain && config.uri && config.password && config.wsServer) {
           console.log('Auto-initializing SIP service with environment configuration');
+          // Set up event listeners before connecting
+          sipService.onStateChanged(setStatus);
+          sipService.onRemoteStreamChanged(setRemoteStream);
           await sipService.connect(config);
         } else {
           console.log('Incomplete SIP configuration in environment. User must configure manually in Settings.');
@@ -39,7 +42,7 @@ function App() {
     };
 
     initializeSip();
-  }, [getSipConfigFromEnv, setStatus]);
+  }, [getSipConfigFromEnv, setStatus, setRemoteStream]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 to-secondary-50 p-4">

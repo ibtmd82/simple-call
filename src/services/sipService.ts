@@ -70,7 +70,7 @@ export class SIPService {
         sessionDescriptionHandlerFactoryOptions: { disableDtls: config.disableDtls || false },
         userAgentString: 'SIP.js/0.21.2',
       };
-
+        logLevel: 'debug',
       console.log('Tạo UA với cấu hình:', {
         ...uaConfig,
         uri: uaConfig.uri.toString(),
@@ -497,7 +497,7 @@ export class SIPService {
         },
         userAgentString: 'WebRTC-SIP-Client/1.0',
         traceSip: false,
-        logLevel: 'error',
+        logLevel: 'debug',
       };
 
       const testUa = new UserAgent(testUaConfig);
