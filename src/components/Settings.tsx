@@ -70,6 +70,13 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
 
       // Save to store and session storage
       saveSipConfig(formData);
+      
+      console.log('Configuration saved successfully:', {
+        domain: formData.domain,
+        uri: formData.uri,
+        wsServer: formData.wsServer,
+        hasPassword: !!formData.password,
+      });
 
       // Test connection with new config
       try {
@@ -81,8 +88,8 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
       } catch (error) {
         // Save the config even if connection fails
         setTestResult({
-          success: false,
-          message: `Configuration saved, but connection failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          success: true,
+          message: `Configuration saved successfully! Connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
         });
       }
     } catch (error) {

@@ -31,12 +31,13 @@ const getConfigFromEnv = (): SipConfig => {
   };
 };
 
-// Helper function to save config to .env file (simulated by updating environment variables)
+// Helper function to save config to localStorage and update environment variables
 const saveConfigToEnv = async (config: SipConfig): Promise<void> => {
-  // In a real application, this would make an API call to update the .env file
-  // For now, we'll update the environment variables in memory
   if (typeof window !== 'undefined') {
-    // Update the environment variables
+    // Save to localStorage for persistence
+    localStorage.setItem('sip-config', JSON.stringify(config));
+    
+    // Update environment variables in memory
     (import.meta.env as any).VITE_SIP_DOMAIN = config.domain;
     (import.meta.env as any).VITE_SIP_URI = config.uri;
     (import.meta.env as any).VITE_SIP_PASSWORD = config.password;
@@ -44,29 +45,47 @@ const saveConfigToEnv = async (config: SipConfig): Promise<void> => {
     (import.meta.env as any).VITE_SIP_CALL_ID = config.callId || '';
     (import.meta.env as any).VITE_SIP_DISABLE_DTLS = config.disableDtls ? 'true' : 'false';
     
-    // Also save to localStorage as a backup
-    localStorage.setItem('VITE_SIP_DOMAIN', config.domain);
-    localStorage.setItem('VITE_SIP_URI', config.uri);
-    localStorage.setItem('VITE_SIP_PASSWORD', config.password);
-    localStorage.setItem('VITE_SIP_WS_SERVER', config.wsServer);
-    localStorage.setItem('VITE_SIP_CALL_ID', config.callId || '');
-    localStorage.setItem('VITE_SIP_DISABLE_DTLS', config.disableDtls ? 'true' : 'false');
+    console.log('SIP configuration saved to localStorage and environment variables');
   }
 };
 
+// Helper function to load config from localStorage first, then environment
+const loadConfigFromStorage = (): SipConfig => {
+  if (typeof window !== 'undefined') {
+    try {
+      const savedConfig = localStorage.getItem('sip-config');
+      if (savedConfig) {
+        const parsed = JSON.parse(savedConfig);
+        console.log('Loaded SIP config from localStorage:', {
+          domain: parsed.domain,
+          uri: parsed.uri,
+          wsServer: parsed.wsServer,
+          hasPassword: !!parsed.password,
+        });
+        return parsed;
+      }
+    } catch (error) {
+      console.error('Error loading config from localStorage:', error);
+    }
+  }
+  
+  // Fallback to environment variables
+  return getConfigFromEnv();
+};
+
 export const useSettingsStore = create<SettingsState>((set, get) => ({
-  sipConfig: getConfigFromEnv(), // Initialize with environment config
+  sipConfig: loadConfigFromStorage(), // Initialize with saved config or environment config
   
   updateSipConfig: (config: SipConfig) => {
     set({ sipConfig: config });
   },
   
-  saveSipConfig: async (config: SipConfig) => {
+  saveSipConfig: (config: SipConfig) => {
     // Update the store
     set({ sipConfig: config });
     
-    // Save to .env file (simulated)
-    await saveConfigToEnv(config);
+    // Save to localStorage and update environment variables
+    saveConfigToEnv(config);
   },
   
   resetSipConfig: () => {
@@ -82,14 +101,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     
     set({ sipConfig: resetConfig });
     
-    // Clear localStorage backup
+    // Clear saved configuration
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('VITE_SIP_DOMAIN');
-      localStorage.removeItem('VITE_SIP_URI');
-      localStorage.removeItem('VITE_SIP_PASSWORD');
-      localStorage.removeItem('VITE_SIP_WS_SERVER');
-      localStorage.removeItem('VITE_SIP_CALL_ID');
-      localStorage.removeItem('VITE_SIP_DISABLE_DTLS');
+      localStorage.removeItem('sip-config');
     }
   },
   
