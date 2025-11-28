@@ -175,7 +175,10 @@ export class SIPService {
       // Clean up on connection failure
       if (this.ua) {
         try {
-          await this.ua.stop();
+          // Only stop if UA is not already stopped
+          if (this.ua.state !== 'Stopped') {
+            await this.ua.stop();
+          }
         } catch (stopError) {
           console.error('Error stopping UA after connection failure:', stopError);
         }
@@ -560,7 +563,7 @@ export class SIPService {
 
       } finally {
         // Always clean up the test UserAgent
-        if (testUa) {
+        if (testUa && testUa.state !== 'Stopped') {
           await testUa.stop();
         }
       }
