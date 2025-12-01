@@ -69,8 +69,9 @@ export class SIPService {
         registerExpires: 600,
         sessionDescriptionHandlerFactoryOptions: { disableDtls: config.disableDtls || false },
         userAgentString: 'SIP.js/0.21.2',
-      };
         logLevel: 'debug',
+        logLevel: 'debug',
+      };
       console.log('Tạo UA với cấu hình:', {
         ...uaConfig,
         uri: uaConfig.uri.toString(),
