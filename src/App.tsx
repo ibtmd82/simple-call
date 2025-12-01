@@ -8,7 +8,7 @@ import { sipService } from './services/sipService';
 import { CallStatus } from './types/index';
 
 function App() {
-  const { status, localStream, remoteStream, setStatus } = useCallStore();
+  const { status, localStream, remoteStream, setStatus, setRemoteStream } = useCallStore();
   const { getSipConfigFromEnv } = useSettingsStore();
 
   React.useEffect(() => {
