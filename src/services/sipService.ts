@@ -175,10 +175,8 @@ export class SIPService {
       // Clean up on connection failure
       if (this.ua) {
         try {
-          // Only stop if UA is not already stopped
-          if (this.ua.state !== 'Stopped') {
-            await this.ua.stop();
-          }
+          // When ua.start() fails, the UserAgent is already unusable
+          // No need to call stop() as it may already be stopped
         } catch (stopError) {
           console.error('Error stopping UA after connection failure:', stopError);
         }
