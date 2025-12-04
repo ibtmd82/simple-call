@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { User, Phone, Search, Plus } from 'lucide-react';
 import { Input } from './ui/Input';
+import { useSettingsStore } from '../store/useSettingsStore';
 
 interface Contact {
   id: string;
@@ -15,14 +16,27 @@ interface ContactsProps {
 
 export const Contacts: React.FC<ContactsProps> = ({ onCallNumber }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const { getSipConfigFromEnv } = useSettingsStore();
   
-  // Sample contacts - in a real app, these would come from a store or API
-  const contacts: Contact[] = [
-    { id: '1', name: 'Support Team', number: '168@opensips.mooo.com' },
-    { id: '2', name: 'Technical Support', number: '169@opensips.mooo.com' },
-    { id: '3', name: 'Customer Service', number: '170@opensips.mooo.com' },
-    { id: '4', name: 'Emergency Line', number: '911@opensips.mooo.com' },
-  ];
+  // Get domain from .env configuration
+  const sipConfig = getSipConfigFromEnv();
+  const domain = sipConfig.domain || '';
+  
+  // Sample contacts - use domain from .env configuration
+  // In a real app, these would come from a store or API
+  const contacts: Contact[] = useMemo(() => {
+    if (!domain) {
+      // Return empty contacts if domain is not configured
+      return [];
+    }
+    
+    return [
+      { id: '1', name: 'Support Team', number: `168@${domain}` },
+      { id: '2', name: 'Technical Support', number: `169@${domain}` },
+      { id: '3', name: 'Customer Service', number: `170@${domain}` },
+      { id: '4', name: 'Emergency Line', number: `911@${domain}` },
+    ];
+  }, [domain]);
 
   const filteredContacts = contacts.filter(contact =>
     contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -66,7 +80,19 @@ export const Contacts: React.FC<ContactsProps> = ({ onCallNumber }) => {
 
       {/* Contacts List - Mobile Optimized */}
       <div className="space-y-1.5 xs:space-y-2 sm:space-y-3 max-h-[60vh] sm:max-h-96 overflow-y-auto">
-        {filteredContacts.length === 0 ? (
+        {!domain ? (
+          <div className="text-center py-8 xs:py-10 sm:py-14">
+            <div className="inline-flex items-center justify-center w-16 h-16 xs:w-20 xs:h-20 rounded-full bg-gradient-to-br from-secondary-100 to-secondary-200 mb-4 shadow-soft">
+              <User className="w-8 h-8 xs:w-10 xs:h-10 sm:w-12 sm:h-12 text-secondary-500" />
+            </div>
+            <p className="text-secondary-500 text-sm xs:text-base font-medium">
+              SIP domain not configured
+            </p>
+            <p className="text-secondary-400 text-xs xs:text-sm mt-2">
+              Please configure VITE_SIP_DOMAIN in .env file
+            </p>
+          </div>
+        ) : filteredContacts.length === 0 ? (
           <div className="text-center py-8 xs:py-10 sm:py-14">
             <div className="inline-flex items-center justify-center w-16 h-16 xs:w-20 xs:h-20 rounded-full bg-gradient-to-br from-secondary-100 to-secondary-200 mb-4 shadow-soft">
               <User className="w-8 h-8 xs:w-10 xs:h-10 sm:w-12 sm:h-12 text-secondary-500" />

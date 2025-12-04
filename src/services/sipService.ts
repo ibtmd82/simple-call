@@ -559,10 +559,14 @@ export class SIPService {
         targetUri = new URI('sip', parts[0], parts[1]);
       } else {
         // Otherwise, use the domain from UA configuration (which comes from .env)
-        // Fallback to hardcoded domain only if UA config is not available
+        // Domain must be configured - no hardcoded fallback
         const domain = this.ua.configuration?.uri?.host || 
-                      import.meta.env.VITE_SIP_DOMAIN || 
-                      'opensips.mooo.com';
+                      import.meta.env.VITE_SIP_DOMAIN;
+        
+        if (!domain) {
+          throw new Error('SIP domain is not configured. Please set VITE_SIP_DOMAIN in .env file.');
+        }
+        
         console.log(`📞 Making call to ${number}@${domain}`);
         targetUri = new URI('sip', number, domain);
       }

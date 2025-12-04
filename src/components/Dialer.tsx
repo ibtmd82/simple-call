@@ -49,15 +49,24 @@ export const Dialer: React.FC<DialerProps> = ({ onCall }) => {
     if (phoneNumber.trim() && canMakeCall) {
       try {
         const sipConfig = getSipConfigFromEnv();
+        
+        // Validate domain is configured
+        if (!sipConfig.domain) {
+          console.error('SIP domain is not configured. Please set VITE_SIP_DOMAIN in .env file.');
+          alert('SIP domain is not configured. Please configure it in Settings.');
+          return;
+        }
+        
         // Use the destination number as-is if it contains @, otherwise use domain from .env
         const destination = phoneNumber.includes('@') 
           ? phoneNumber 
-          : `${phoneNumber}@${sipConfig.domain || 'opensips.mooo.com'}`;
+          : `${phoneNumber}@${sipConfig.domain}`;
         
         await sipService.makeCall(destination, true); // Enable video by default
         onCall?.(phoneNumber);
       } catch (error) {
         console.error('Failed to make call:', error);
+        alert(`Failed to make call: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     }
   };
