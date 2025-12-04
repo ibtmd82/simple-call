@@ -120,15 +120,15 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
       setFormData(formData);
       
       console.log('Configuration saved successfully:', {
-        domain: formData.domain,
-        uri: formData.uri,
-        wsServer: formData.wsServer,
-        hasPassword: !!formData.password,
+        domain: completeConfig.domain,
+        uri: completeConfig.uri,
+        wsServer: completeConfig.wsServer,
+        hasPassword: !!completeConfig.password,
       });
 
-      // Test connection with new config
+      // Test connection with new config (use completeConfig which has .env values)
       try {
-        await sipService.connect(formData);
+        await sipService.connect(completeConfig);
         setTestResult({
           success: true,
           message: 'Settings saved! User credentials saved to browser localStorage. Connection established successfully!'

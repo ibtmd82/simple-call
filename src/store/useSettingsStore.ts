@@ -95,7 +95,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   sipConfig: getInitialConfig(),
   
   updateSipConfig: (config: SipConfig) => {
-    set({ sipConfig: config });
+    // Always ensure domain/wsServer come from .env (ignore any values in config)
+    const envConfig = getConfigFromEnv();
+    set({ 
+      sipConfig: {
+        ...envConfig, // Always use .env values for domain/wsServer/callId
+        uri: config.uri || '',
+        password: config.password || '',
+      }
+    });
   },
   
   saveSipConfig: (config: SipConfig) => {
@@ -132,11 +140,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   saveUserCredentials: (uri: string, password: string) => {
     saveUserCredentialsToStorage(uri, password);
     
-    // Update the store
+    // Always refresh domain/wsServer from .env (never use stale values)
+    const envConfig = getConfigFromEnv();
     const currentConfig = get().sipConfig;
     set({ 
       sipConfig: {
-        ...currentConfig,
+        ...envConfig, // Always use fresh .env values for domain/wsServer/callId
         uri,
         password,
       }
@@ -146,11 +155,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   loadUserCredentials: async () => {
     const credentials = loadUserCredentialsFromStorage();
     if (credentials) {
-      // Update store with loaded credentials
-      const currentConfig = get().sipConfig;
+      // Always refresh domain/wsServer from .env (never use stale values)
+      const envConfig = getConfigFromEnv();
       set({ 
         sipConfig: {
-          ...currentConfig,
+          ...envConfig, // Always use fresh .env values for domain/wsServer/callId
           uri: credentials.uri,
           password: credentials.password,
         }
