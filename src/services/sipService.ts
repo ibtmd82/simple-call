@@ -558,8 +558,12 @@ export class SIPService {
         const parts = number.split('@');
         targetUri = new URI('sip', parts[0], parts[1]);
       } else {
-        // Otherwise, use the domain from UA configuration or default
-        const domain = this.ua.configuration?.uri?.host || 'opensips.mooo.com';
+        // Otherwise, use the domain from UA configuration (which comes from .env)
+        // Fallback to hardcoded domain only if UA config is not available
+        const domain = this.ua.configuration?.uri?.host || 
+                      import.meta.env.VITE_SIP_DOMAIN || 
+                      'opensips.mooo.com';
+        console.log(`📞 Making call to ${number}@${domain}`);
         targetUri = new URI('sip', number, domain);
       }
 
@@ -580,6 +584,12 @@ export class SIPService {
       };
 
       const options = {
+        // Add extra headers to help with routing and compatibility
+        extraHeaders: [
+          'User-Agent: WebRTC-SIP-Client/1.0',
+          'Supported: outbound, path, gruu',
+          'Allow: INVITE, ACK, CANCEL, BYE, UPDATE, INFO, NOTIFY, REFER, OPTIONS',
+        ],
         sessionDescriptionHandlerOptions: {
           constraints: constraints,
           iceCheckingTimeout: 5000,
@@ -743,8 +753,23 @@ export class SIPService {
       };
 
       // Create an Inviter to make an outbound call
+      console.log('📞 Creating Inviter with target URI:', targetUri.toString());
+      console.log('📞 Inviter options:', {
+        hasExtraHeaders: !!options.extraHeaders,
+        extraHeadersCount: options.extraHeaders?.length || 0,
+        hasSDHOptions: !!options.sessionDescriptionHandlerOptions,
+      });
+      
       const inviter = new Inviter(this.ua, targetUri, options);
       this.currentSession = inviter;
+      
+      // Log the request URI that will be used
+      console.log('📞 Inviter created, target URI:', targetUri.toString());
+      console.log('📞 UA configuration:', {
+        uri: this.ua.configuration.uri?.toString(),
+        domain: this.ua.configuration.uri?.host,
+        registered: this.registerer?.state === 'Registered',
+      });
       
       this.setupSessionEventListeners(inviter);
 
@@ -845,7 +870,21 @@ export class SIPService {
       // NOTE: We do NOT set up local/remote streams here - that will only happen after
       // successful ACK response in the "Established" state handler
       console.log('📞 Calling invite() - modifier and delegate will ensure video is included in SDP');
-      await inviter.invite();
+      console.log('📞 INVITE details:', {
+        targetUri: targetUri.toString(),
+        fromUri: this.ua.configuration.uri?.toString(),
+        registered: this.registerer?.state === 'Registered',
+        uaState: this.ua.state,
+        uaConnected: this.ua.isConnected(),
+      });
+      
+      try {
+        await inviter.invite();
+        console.log('✅ INVITE sent successfully, waiting for response...');
+      } catch (error) {
+        console.error('❌ Error sending INVITE:', error);
+        throw error;
+      }
       
       // Set up early peer connection listeners to catch remote tracks as soon as they arrive
       // This is important for outbound calls to receive remote media
@@ -1582,10 +1621,19 @@ export class SIPService {
     };
 
     session.stateChange.addListener((state) => {
-      console.log(`Trạng thái phiên thay đổi: ${state}`);
+      const isOutbound = session instanceof Inviter;
+      console.log(`📞 Session state changed: ${state} (${isOutbound ? 'Outbound' : 'Inbound'})`);
+      
       switch (state) {
+        case 'Initial':
+          console.log(`📞 Session in Initial state - ${isOutbound ? 'preparing to send INVITE' : 'waiting for INVITE'}`);
+          break;
+        case 'InviteSent':
+          console.log('📞 INVITE sent, waiting for response from remote side...');
+          this.onStateChange?.(CallStatus.RINGING);
+          break;
         case 'Established':
-          console.log('Phiên đã được thiết lập');
+          console.log('✅ Phiên đã được thiết lập - call is active');
           this.onStateChange?.(CallStatus.ACTIVE);
           this.setupPeerConnectionListeners(session);
           

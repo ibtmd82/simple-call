@@ -49,10 +49,10 @@ export const Dialer: React.FC<DialerProps> = ({ onCall }) => {
     if (phoneNumber.trim() && canMakeCall) {
       try {
         const sipConfig = getSipConfigFromEnv();
-        // Use the destination number as-is if it contains @, otherwise use opensips.mooo.com domain
+        // Use the destination number as-is if it contains @, otherwise use domain from .env
         const destination = phoneNumber.includes('@') 
           ? phoneNumber 
-          : `${phoneNumber}@opensips.mooo.com`;
+          : `${phoneNumber}@${sipConfig.domain || 'opensips.mooo.com'}`;
         
         await sipService.makeCall(destination, true); // Enable video by default
         onCall?.(phoneNumber);
