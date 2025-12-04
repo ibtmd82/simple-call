@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  simple-call:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simple-call-app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Mount SSL certificates (create these directories and add certificates)
+      - ./ssl:/etc/nginx/ssl:ro
+      # Optional: Mount custom nginx config
+      # - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - simple-call-network
+
+networks:
+  simple-call-network:
+    driver: bridge

@@ -71,6 +71,9 @@ export default {
       spacing: {
         '18': '4.5rem',
         'safe-area-bottom': 'env(safe-area-inset-bottom)',
+        'safe-area-top': 'env(safe-area-inset-top)',
+        'safe-area-left': 'env(safe-area-inset-left)',
+        'safe-area-right': 'env(safe-area-inset-right)',
       },
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',

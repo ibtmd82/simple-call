@@ -25,21 +25,21 @@ export const Button: React.FC<ButtonProps> = ({
   disabled,
   ...props
 }) => {
-  const baseStyles = 'inline-flex items-center justify-center rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none';
+  const baseStyles = 'inline-flex items-center justify-center rounded-lg font-semibold transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none touch-manipulation smooth-hover scale-on-press ripple';
   
   const variantStyles = {
-    primary: 'bg-primary-500 text-white hover:bg-primary-600 active:bg-primary-700',
-    secondary: 'bg-secondary-100 text-secondary-900 hover:bg-secondary-200 active:bg-secondary-300',
-    success: 'bg-success-500 text-white hover:bg-success-600 active:bg-success-700',
-    danger: 'bg-error-500 text-white hover:bg-error-600 active:bg-error-700',
-    ghost: 'bg-transparent hover:bg-secondary-100 text-secondary-900 active:bg-secondary-200',
+    primary: 'bg-gradient-to-r from-primary-500 to-primary-600 hover:from-primary-600 hover:to-primary-700 active:from-primary-700 active:to-primary-800 text-white shadow-medium hover:shadow-strong hover:scale-105 active:scale-95',
+    secondary: 'bg-gradient-to-r from-secondary-100 to-secondary-200 hover:from-secondary-200 hover:to-secondary-300 active:from-secondary-300 active:to-secondary-400 text-secondary-900 border border-secondary-300/50 shadow-soft hover:shadow-medium active:scale-95',
+    success: 'bg-gradient-to-r from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 active:from-success-700 active:to-success-800 text-white shadow-medium hover:shadow-strong hover:scale-105 active:scale-95',
+    danger: 'bg-gradient-to-r from-error-500 to-error-600 hover:from-error-600 hover:to-error-700 active:from-error-700 active:to-error-800 text-white shadow-medium hover:shadow-strong hover:scale-105 active:scale-95',
+    ghost: 'bg-transparent hover:bg-secondary-100/50 active:bg-secondary-200/50 text-secondary-900 hover:scale-105 active:scale-95',
   };
   
   const sizeStyles = {
-    sm: 'text-sm h-8 px-3',
-    md: 'text-sm h-10 px-4',
-    lg: 'text-base h-12 px-6',
-    icon: 'text-sm h-10 w-10',
+    sm: 'text-xs xs:text-sm h-9 xs:h-10 px-2.5 xs:px-3',
+    md: 'text-sm h-11 xs:h-12 px-3 xs:px-4',
+    lg: 'text-sm xs:text-base h-12 xs:h-14 px-4 xs:px-6',
+    icon: 'text-sm h-10 xs:h-11 w-10 xs:w-11',
   };
   
   const widthClass = fullWidth ? 'w-full' : '';

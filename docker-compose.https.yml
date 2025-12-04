@@ -1,0 +1,33 @@
+version: '3.8'
+
+# Docker Compose configuration with HTTPS support
+# Make sure SSL certificates are in ./ssl/ directory:
+#   - cert.pem (SSL certificate)
+#   - key.pem (SSL private key)
+
+services:
+  simple-call:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simple-call-app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Mount SSL certificates
+      - ./ssl:/etc/nginx/ssl:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "--no-check-certificate", "https://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - simple-call-network
+
+networks:
+  simple-call-network:
+    driver: bridge
+

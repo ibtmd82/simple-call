@@ -1,43 +1,71 @@
 import React, { useState, useEffect } from 'react';
-import { Settings as SettingsIcon, Save, Eye, EyeOff, Wifi, Server, User, Lock, Globe, RefreshCw, AlertCircle, CheckCircle, Phone } from 'lucide-react';
+import { Settings as SettingsIcon, Save, Eye, EyeOff, Wifi, User, Lock, AlertCircle, CheckCircle, Phone, Radio } from 'lucide-react';
 import { Input } from './ui/Input';
 import { Button } from './ui/Button';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useCallStore } from '../store/useCallStore';
 import { sipService } from '../services/sipService';
+import { CallStatus, SipConfig } from '../types/index';
 
 interface SettingsProps {
   onClose?: () => void;
 }
 
 export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
-  const { sipConfig, updateSipConfig, saveSipConfig, resetSipConfig, getSipConfigFromEnv } = useSettingsStore();
+  const { sipConfig, saveSipConfig, saveUserCredentials, loadUserCredentials } = useSettingsStore();
+  const { status } = useCallStore();
   const [formData, setFormData] = useState(sipConfig);
   const [showPassword, setShowPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   useEffect(() => {
-    // Load current config from store, but fall back to environment if no saved config
-    const savedConfig = sipConfig;
-    
-    // If no saved config, load from environment for initial display
-    if (!savedConfig.domain && !savedConfig.uri && !savedConfig.password && !savedConfig.wsServer) {
-      const envConfig = {
-        domain: import.meta.env.VITE_SIP_DOMAIN || '',
-        uri: import.meta.env.VITE_SIP_URI || '',
-        password: import.meta.env.VITE_SIP_PASSWORD || '',
-        wsServer: import.meta.env.VITE_SIP_WS_SERVER || '',
-        callId: import.meta.env.VITE_SIP_CALL_ID || '',
-        disableDtls: import.meta.env.VITE_SIP_DISABLE_DTLS === 'true',
-      };
-      setFormData(envConfig);
-    } else {
-      setFormData(savedConfig);
-    }
-  }, [sipConfig]);
+    // Load config from .env (excluding username/password) and localStorage
+    const loadConfig = async () => {
+      setIsLoading(true);
+      try {
+        // Load user credentials from localStorage
+        const credentials = await loadUserCredentials();
+        
+        // Only set form data for fields that can be edited (username, password)
+        // domain, wsServer, callId come from .env only
+        // disableDtls is always false (DTLS always enabled)
+        setFormData({
+          domain: '', // Not editable, comes from .env
+          wsServer: '', // Not editable, comes from .env
+          callId: '', // Not editable, comes from .env
+          uri: credentials?.uri || sipConfig.uri || '',
+          password: credentials?.password || sipConfig.password || '',
+          disableDtls: false, // Always enabled
+        });
+      } catch (error) {
+        console.error('Error loading config:', error);
+        setFormData(sipConfig);
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-  const handleInputChange = (field: keyof typeof formData, value: string) => {
+    loadConfig();
+  }, []);
+
+  useEffect(() => {
+    // Update form data when sipConfig changes (only for editable fields)
+    if (!isLoading) {
+      setFormData(prev => ({
+        ...prev,
+        // domain, wsServer, callId are not editable (come from .env)
+        // disableDtls is always false (DTLS always enabled)
+        // Keep existing credentials unless explicitly changed
+        uri: sipConfig.uri || prev.uri,
+        password: sipConfig.password || prev.password,
+      }));
+    }
+  }, [sipConfig, isLoading]);
+
+  const handleInputChange = (field: keyof typeof formData, value: string | boolean) => {
     setFormData(prev => ({
       ...prev,
       [field]: value
@@ -50,26 +78,46 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     setTestResult(null);
 
     try {
-      // Validate required fields
-      if (!formData.domain || !formData.uri || !formData.password || !formData.wsServer) {
+      // Validate required fields (domain and wsServer come from .env)
+      if (!formData.uri || !formData.password) {
         setTestResult({
           success: false,
-          message: 'Domain, Username, Password, and WebSocket Server are required'
+          message: 'Username and Password are required'
         });
+        setIsSaving(false);
         return;
       }
 
-      // Validate WebSocket URL format
-      if (!formData.wsServer.startsWith('ws://') && !formData.wsServer.startsWith('wss://')) {
+      // Check if .env config is available
+      const envDomain = import.meta.env.VITE_SIP_DOMAIN || '';
+      const envWsServer = import.meta.env.VITE_SIP_WS_SERVER || '';
+      
+      if (!envDomain || !envWsServer) {
         setTestResult({
           success: false,
-          message: 'WebSocket server must start with ws:// or wss://'
+          message: 'Domain and WebSocket Server must be configured in .env file'
         });
+        setIsSaving(false);
         return;
       }
 
-      // Save to store and session storage
-      saveSipConfig(formData);
+      // Build complete config from .env + form data (username, password)
+      // DTLS is always enabled (disableDtls: false)
+      const completeConfig: SipConfig = {
+        domain: import.meta.env.VITE_SIP_DOMAIN || '',
+        wsServer: import.meta.env.VITE_SIP_WS_SERVER || '',
+        callId: import.meta.env.VITE_SIP_CALL_ID || '',
+        uri: formData.uri,
+        password: formData.password,
+        disableDtls: false, // Always enabled
+      };
+      
+      // Save config (only credentials, domain/wsServer/callId come from .env)
+      saveSipConfig(completeConfig);
+      saveUserCredentials(formData.uri, formData.password);
+      
+      // Update formData to reflect saved state
+      setFormData(formData);
       
       console.log('Configuration saved successfully:', {
         domain: formData.domain,
@@ -83,13 +131,13 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
         await sipService.connect(formData);
         setTestResult({
           success: true,
-          message: 'Settings saved and connection established successfully!'
+          message: 'Settings saved! User credentials saved to browser localStorage. Connection established successfully!'
         });
       } catch (error) {
         // Save the config even if connection fails
         setTestResult({
           success: true,
-          message: `Configuration saved successfully! Connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          message: `Settings saved! User credentials saved to browser localStorage. Connection test failed: ${error instanceof Error ? error.message : 'Unknown error'}`
         });
       }
     } catch (error) {
@@ -107,17 +155,40 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     setTestResult(null);
 
     try {
-      // Validate required fields first
-      if (!formData.domain || !formData.uri || !formData.password || !formData.wsServer) {
+      // Validate required fields (domain and wsServer come from .env)
+      if (!formData.uri || !formData.password) {
         setTestResult({
           success: false,
-          message: 'Domain, Username, Password, and WebSocket Server are required for testing'
+          message: 'Username and Password are required for testing'
         });
         return;
       }
 
+      // Check if .env config is available
+      const envDomain = import.meta.env.VITE_SIP_DOMAIN || '';
+      const envWsServer = import.meta.env.VITE_SIP_WS_SERVER || '';
+      
+      if (!envDomain || !envWsServer) {
+        setTestResult({
+          success: false,
+          message: 'Domain and WebSocket Server must be configured in .env file'
+        });
+        return;
+      }
+
+      // Build complete config from .env + form data for testing
+      // DTLS is always enabled (disableDtls: false)
+      const testConfig: SipConfig = {
+        domain: import.meta.env.VITE_SIP_DOMAIN || '',
+        wsServer: import.meta.env.VITE_SIP_WS_SERVER || '',
+        callId: import.meta.env.VITE_SIP_CALL_ID || '',
+        uri: formData.uri,
+        password: formData.password,
+        disableDtls: false, // Always enabled
+      };
+      
       // Use the dedicated test connection method
-      await sipService.testConnection(formData);
+      await sipService.testConnection(testConfig);
       setTestResult({
         success: true,
         message: 'Connection and registration test successful!'
@@ -132,52 +203,72 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     }
   };
 
-  const handleReset = () => {
-    resetSipConfig();
-    setFormData({
-      domain: '',
-      uri: '',
-      password: '',
-      wsServer: '',
-      callId: '',
-    });
-    setTestResult(null);
-    
-    // Show success message after reset
-    setTestResult({
-      success: true,
-      message: 'Settings reset successfully. Using default configuration from environment.'
-    });
+  // Form is valid if username and password are provided (domain/wsServer come from .env)
+  const envDomain = import.meta.env.VITE_SIP_DOMAIN || '';
+  const envWsServer = import.meta.env.VITE_SIP_WS_SERVER || '';
+  const isFormValid = formData.uri && formData.password && envDomain && envWsServer;
+
+  const getStatusInfo = () => {
+    switch (status) {
+      case CallStatus.IDLE:
+        return { text: 'Idle', color: 'text-secondary-500', bgColor: 'bg-secondary-100', icon: Radio };
+      case CallStatus.CONNECTING:
+        return { text: 'Connecting...', color: 'text-primary-600', bgColor: 'bg-primary-100', icon: Radio };
+      case CallStatus.CONNECTED:
+        return { text: 'Connected', color: 'text-primary-600', bgColor: 'bg-primary-100', icon: Radio };
+      case CallStatus.REGISTERED:
+        return { text: 'Registered', color: 'text-success-600', bgColor: 'bg-success-100', icon: CheckCircle };
+      case CallStatus.UNREGISTERED:
+        return { text: 'Unregistered', color: 'text-error-600', bgColor: 'bg-error-100', icon: AlertCircle };
+      case CallStatus.CALLING:
+        return { text: 'Calling...', color: 'text-primary-600', bgColor: 'bg-primary-100', icon: Phone };
+      case CallStatus.RINGING:
+        return { text: 'Ringing...', color: 'text-primary-600', bgColor: 'bg-primary-100', icon: Phone };
+      case CallStatus.ACTIVE:
+        return { text: 'Call Active', color: 'text-success-600', bgColor: 'bg-success-100', icon: Phone };
+      case CallStatus.ENDED:
+        return { text: 'Call Ended', color: 'text-secondary-500', bgColor: 'bg-secondary-100', icon: Phone };
+      case CallStatus.FAILED:
+        return { text: 'Connection Failed', color: 'text-error-600', bgColor: 'bg-error-100', icon: AlertCircle };
+      default:
+        return { text: 'Unknown', color: 'text-secondary-500', bgColor: 'bg-secondary-100', icon: Radio };
+    }
   };
 
-  const isFormValid = formData.domain && formData.uri && formData.password && formData.wsServer;
-  const hasChanges = JSON.stringify(formData) !== JSON.stringify(sipConfig);
+  const statusInfo = getStatusInfo();
+  const StatusIcon = statusInfo.icon;
 
   return (
-    <div className="bg-white rounded-2xl shadow-xl p-4 sm:p-6 w-full max-w-md mx-auto">
+    <div className="bg-white/90 backdrop-blur-lg rounded-2xl sm:rounded-3xl shadow-strong border border-white/50 p-4 xs:p-5 sm:p-6 w-full max-w-md mx-auto animate-fade-in-up">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center">
-          <SettingsIcon className="w-5 h-5 text-primary-600" />
+      <div className="flex items-center gap-3 xs:gap-3.5 mb-5 xs:mb-6 sm:mb-7">
+        <div className="w-12 h-12 xs:w-14 xs:h-14 rounded-full bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center shadow-medium">
+          <SettingsIcon className="w-6 h-6 xs:w-7 xs:h-7 text-white" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold text-secondary-900">SIP Settings</h2>
-          <p className="text-sm text-secondary-500">Configure your SIP server connection</p>
+          <h2 className="text-xl xs:text-2xl font-bold bg-gradient-to-r from-secondary-800 to-secondary-900 bg-clip-text text-transparent">SIP Settings</h2>
+          <p className="text-xs xs:text-sm text-secondary-500 mt-0.5">Configure your SIP server connection</p>
         </div>
       </div>
 
-      {/* Form */}
-      <div className="space-y-4">
-        {/* SIP Domain */}
-        <Input
-          label="SIP Domain"
-          placeholder="192.223.13.211 or sip.example.com"
-          value={formData.domain}
-          onChange={(e) => handleInputChange('domain', e.target.value)}
-          leftIcon={<Globe className="w-4 h-4" />}
-          fullWidth
-        />
+      {/* Connection Status */}
+      <div className={`mb-5 xs:mb-6 sm:mb-7 rounded-xl xs:rounded-2xl p-3 xs:p-3.5 flex items-center gap-3 xs:gap-3.5 border border-current/20 shadow-soft ${statusInfo.bgColor}`}>
+        <div className={`flex-shrink-0 ${statusInfo.color}`}>
+          <StatusIcon className="w-5 h-5 xs:w-6 xs:h-6" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`text-xs xs:text-sm font-semibold ${statusInfo.color}`}>Connection Status</p>
+          <p className={`text-[10px] xs:text-xs ${statusInfo.color} opacity-90 truncate font-medium`}>{statusInfo.text}</p>
+        </div>
+        {(status === CallStatus.REGISTERED || status === CallStatus.CONNECTED) && (
+          <div className="flex-shrink-0">
+            <div className="w-2.5 h-2.5 rounded-full bg-success-500 animate-pulse shadow-sm"></div>
+          </div>
+        )}
+      </div>
 
+      {/* Form */}
+      <div className="space-y-3 xs:space-y-4">
         {/* SIP Username */}
         <Input
           label="SIP Username"
@@ -208,64 +299,24 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
           </button>
         </div>
 
-        {/* WebSocket Server */}
-        <Input
-          label="WebSocket Server"
-          placeholder="wss://192.223.13.211:8080/ws"
-          value={formData.wsServer}
-          onChange={(e) => handleInputChange('wsServer', e.target.value)}
-          leftIcon={<Server className="w-4 h-4" />}
-          fullWidth
-        />
-
-        {/* Call ID */}
-        <Input
-          label="Call ID (Optional)"
-          placeholder="unique-call-identifier"
-          value={formData.callId || ''}
-          onChange={(e) => handleInputChange('callId', e.target.value)}
-          leftIcon={<Phone className="w-4 h-4" />}
-          fullWidth
-        />
-
-        {/* Quick Actions */}
-        <div className="flex gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleReset}
-            leftIcon={<RefreshCw className="w-3 h-3" />}
-          >
-            Reset
-          </Button>
-        </div>
-
-        {/* Help Text */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-          <p className="text-xs text-blue-700">
-            <strong>Note:</strong> You need valid SIP server credentials from a VoIP provider. 
-            The WebSocket server URL should use wss:// for secure connections.
-          </p>
-        </div>
-
         {/* Test Result */}
         {testResult && (
-          <div className={`rounded-lg p-3 flex items-start gap-2 ${
+          <div className={`rounded-xl xs:rounded-2xl p-3 xs:p-3.5 flex items-start gap-2.5 xs:gap-3 shadow-soft border-2 ${
             testResult.success 
-              ? 'bg-success-50 border border-success-200 text-success-700' 
-              : 'bg-error-50 border border-error-200 text-error-700'
+              ? 'bg-gradient-to-br from-success-50 to-success-100 border-success-300/50 text-success-800' 
+              : 'bg-gradient-to-br from-error-50 to-error-100 border-error-300/50 text-error-800'
           }`}>
             {testResult.success ? (
-              <CheckCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <CheckCircle className="w-5 h-5 xs:w-6 xs:h-6 mt-0.5 flex-shrink-0" />
             ) : (
-              <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <AlertCircle className="w-5 h-5 xs:w-6 xs:h-6 mt-0.5 flex-shrink-0" />
             )}
-            <p className="text-sm">{testResult.message}</p>
+            <p className="text-xs xs:text-sm font-medium">{testResult.message}</p>
           </div>
         )}
 
         {/* Action Buttons */}
-        <div className="flex flex-col sm:flex-row gap-3 pt-4">
+        <div className="flex flex-col sm:flex-row gap-2.5 xs:gap-3 pt-3 xs:pt-4">
           <Button
             variant="secondary"
             onClick={handleTestConnection}
@@ -273,6 +324,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             isLoading={isTesting}
             leftIcon={<Wifi className="w-4 h-4" />}
             fullWidth
+            className="min-h-[44px]"
           >
             Test Connection
           </Button>
@@ -284,6 +336,7 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             isLoading={isSaving}
             leftIcon={<Save className="w-4 h-4" />}
             fullWidth
+            className="min-h-[44px]"
           >
             Save Settings
           </Button>
