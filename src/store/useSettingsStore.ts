@@ -73,11 +73,6 @@ const saveUserCredentialsToStorage = (uri: string, password: string): void => {
     try {
       const credentials = { uri, password };
       localStorage.setItem('sip-credentials', JSON.stringify(credentials));
-      
-      // Update environment variables in memory (for runtime use)
-      (import.meta.env as any).VITE_SIP_URI = uri;
-      (import.meta.env as any).VITE_SIP_PASSWORD = password;np
-      
       console.log('User credentials saved to localStorage');
     } catch (error) {
       console.error('Error saving credentials to localStorage:', error);
