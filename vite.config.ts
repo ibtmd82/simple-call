@@ -1,10 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import basicSsl from '@vitejs/plugin-basic-ssl';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), basicSsl()],
+  plugins: [react()],
   optimizeDeps: {
     exclude: ['lucide-react', 'sip.js'],
     esbuildOptions: {
@@ -12,9 +11,9 @@ export default defineConfig({
     },
   },
   server: {
-    https: true, // Enable HTTPS with auto-generated self-signed certificate
+    https: false, // Disable HTTPS for development
     hmr: {
-      protocol: 'wss',
+      protocol: 'ws',
     },
   },
 });
