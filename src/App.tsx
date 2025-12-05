@@ -107,16 +107,32 @@ function App() {
     return () => clearTimeout(timeoutId);
   }, [status, isConfigLoaded, sipConfig]);
 
+  // Determine if we're in a call
+  const isInCall = status === CallStatus.CALLING || 
+                   status === CallStatus.RINGING || 
+                   status === CallStatus.CONNECTING || 
+                   status === CallStatus.ACTIVE || 
+                   status === CallStatus.INCOMING || 
+                   status === CallStatus.ENDED;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 safe-area-top safe-area-bottom">
-      <div className="w-full max-w-md mx-auto px-2 sm:px-4 py-2 sm:py-4">
-        {(status === CallStatus.CALLING || status === CallStatus.RINGING || status === CallStatus.CONNECTING || status === CallStatus.ACTIVE || status === CallStatus.INCOMING || status === CallStatus.ENDED) ? (
-          <>
-            <VideoCall />
-            <div className="mt-2 sm:mt-4">
+    <div className={`min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 safe-area-top safe-area-bottom ${
+      isInCall ? 'call-screen-portrait md:call-screen-landscape' : ''
+    }`}>
+      <div className={`w-full mx-auto ${
+        isInCall 
+          ? 'max-w-full px-0 py-0 md:px-4 md:py-4' 
+          : 'max-w-md px-2 sm:px-4 py-2 sm:py-4 md:max-w-2xl lg:max-w-4xl'
+      }`}>
+        {isInCall ? (
+          <div className="flex flex-col h-screen md:h-auto">
+            <div className="flex-1 flex items-center justify-center p-2 sm:p-4 md:p-6">
+              <VideoCall />
+            </div>
+            <div className="mt-2 sm:mt-4 md:mt-6 flex-shrink-0">
               <CallControls />
             </div>
-          </>
+          </div>
         ) : (
           <DialerTabs />
         )}

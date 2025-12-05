@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Phone, PhoneOff, User } from 'lucide-react';
+import { Phone, PhoneOff, User, Maximize2, Minimize2 } from 'lucide-react';
 import { useCallStore } from '../store/useCallStore';
 import { formatDuration } from '../utils/timeUtils';
 
@@ -14,7 +14,9 @@ export const VideoCall: React.FC = () => {
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const videoCallContainerRef = useRef<HTMLDivElement>(null);
   const [hasRemoteVideoDimensions, setHasRemoteVideoDimensions] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Set up local video stream
   // CRITICAL: Also depend on video tracks count to ensure effect runs when tracks are added/removed
@@ -574,12 +576,78 @@ export const VideoCall: React.FC = () => {
   // Don't require isVideoEnabled to be true if we have video tracks (they might be enabled by default)
   const hasLocalVideo = localStream?.getVideoTracks().some(track => track.enabled) || false;
 
+  // Fullscreen functionality
+  const toggleFullscreen = async () => {
+    const container = videoCallContainerRef.current;
+    if (!container) return;
+
+    try {
+      if (!isFullscreen) {
+        // Enter fullscreen
+        if (container.requestFullscreen) {
+          await container.requestFullscreen();
+        } else if ((container as any).webkitRequestFullscreen) {
+          await (container as any).webkitRequestFullscreen();
+        } else if ((container as any).mozRequestFullScreen) {
+          await (container as any).mozRequestFullScreen();
+        } else if ((container as any).msRequestFullscreen) {
+          await (container as any).msRequestFullscreen();
+        }
+      } else {
+        // Exit fullscreen
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any).webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        } else if ((document as any).mozCancelFullScreen) {
+          await (document as any).mozCancelFullScreen();
+        } else if ((document as any).msExitFullscreen) {
+          await (document as any).msExitFullscreen();
+        }
+      }
+    } catch (error) {
+      console.error('Error toggling fullscreen:', error);
+    }
+  };
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isCurrentlyFullscreen = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement
+      );
+      setIsFullscreen(isCurrentlyFullscreen);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
   console.log('VideoCall render - hasRemoteVideo:', hasRemoteVideo, 'hasLocalVideo:', hasLocalVideo);
   console.log('Remote stream:', remoteStream);
   console.log('Local stream:', localStream);
 
   return (
-    <div className="bg-black rounded-2xl sm:rounded-3xl shadow-strong overflow-hidden w-full aspect-[4/3] sm:aspect-video relative border-2 border-white/10">
+    <div 
+      ref={videoCallContainerRef}
+      className={`bg-black rounded-2xl sm:rounded-3xl shadow-strong overflow-hidden w-full relative border-2 border-white/10 transition-all duration-300 ${
+        isFullscreen 
+          ? 'video-fullscreen' 
+          : 'aspect-[4/3] sm:aspect-video md:aspect-video lg:aspect-video'
+      }`}
+    >
       {/* Remote Video or Local Video (if no remote) */}
       <div className="absolute inset-0">
         {hasRemoteVideo ? (
@@ -661,7 +729,11 @@ export const VideoCall: React.FC = () => {
 
       {/* Local Video (Picture-in-Picture) - only show if remote video exists (don't show if local is already main) */}
       {hasLocalVideo && hasRemoteVideo && (
-        <div className="absolute top-3 right-3 sm:top-4 sm:right-4 w-24 h-32 xs:w-28 xs:h-36 sm:w-36 sm:h-48 bg-secondary-900 rounded-xl overflow-hidden border-2 border-white/30 shadow-strong backdrop-blur-sm">
+        <div className={`absolute bg-secondary-900 rounded-xl overflow-hidden border-2 border-white/30 shadow-strong backdrop-blur-sm transition-all duration-300 local-video-pip ${
+          isFullscreen 
+            ? 'top-4 right-4 w-32 h-40 md:w-40 md:h-52 lg:w-48 lg:h-64' 
+            : 'top-3 right-3 sm:top-4 sm:right-4 w-24 h-32 xs:w-28 xs:h-36 sm:w-36 sm:h-48 md:w-40 md:h-52'
+        }`}>
           <video
             ref={localVideoRef}
             autoPlay
@@ -670,6 +742,26 @@ export const VideoCall: React.FC = () => {
             className="w-full h-full object-cover"
           />
         </div>
+      )}
+
+      {/* Fullscreen Toggle Button - only show when remote video is active */}
+      {hasRemoteVideo && status === 'active' && (
+        <button
+          onClick={toggleFullscreen}
+          className={`absolute z-20 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-lg p-2 sm:p-2.5 border border-white/20 shadow-medium hover:shadow-strong transition-all duration-300 touch-manipulation ${
+            isFullscreen 
+              ? 'top-4 left-4 md:top-6 md:left-6' 
+              : 'top-3 left-3 sm:top-4 sm:left-4'
+          }`}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        >
+          {isFullscreen ? (
+            <Minimize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+          ) : (
+            <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+          )}
+        </button>
       )}
 
       {/* Call Status Overlay */}
@@ -698,8 +790,14 @@ export const VideoCall: React.FC = () => {
 
       {/* Call Duration (for active calls) */}
       {status === 'active' && !hasRemoteVideo && (
-        <div className="absolute top-3 left-3 xs:top-4 xs:left-4 bg-black/60 backdrop-blur-md rounded-xl px-3 py-2 xs:px-4 xs:py-2.5 border border-white/10 shadow-medium">
-          <p className="text-white text-sm xs:text-base font-bold">
+        <div className={`absolute bg-black/60 backdrop-blur-md rounded-xl border border-white/10 shadow-medium transition-all duration-300 ${
+          isFullscreen 
+            ? 'top-4 left-4 md:top-6 md:left-6 px-4 py-2.5 md:px-5 md:py-3' 
+            : 'top-3 left-3 xs:top-4 xs:left-4 px-3 py-2 xs:px-4 xs:py-2.5'
+        }`}>
+          <p className={`text-white font-bold ${
+            isFullscreen ? 'text-base md:text-lg' : 'text-sm xs:text-base'
+          }`}>
             {formatDuration(duration)}
           </p>
         </div>
