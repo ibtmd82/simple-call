@@ -576,26 +576,50 @@ export const VideoCall: React.FC = () => {
   // Don't require isVideoEnabled to be true if we have video tracks (they might be enabled by default)
   const hasLocalVideo = localStream?.getVideoTracks().some(track => track.enabled) || false;
 
+  // Detect iOS Safari
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+
   // Fullscreen functionality
   const toggleFullscreen = async () => {
     const container = videoCallContainerRef.current;
+    const videoElement = hasRemoteVideo ? remoteVideoRef.current : localVideoRef.current;
+    
     if (!container) return;
 
     try {
       if (!isFullscreen) {
         // Enter fullscreen
-        if (container.requestFullscreen) {
+        // iOS Safari requires using the video element's webkitEnterFullscreen method
+        if (isIOS && videoElement && (videoElement as any).webkitEnterFullscreen) {
+          console.log('Using iOS Safari video fullscreen');
+          (videoElement as any).webkitEnterFullscreen();
+          // iOS doesn't fire fullscreenchange events, so we set state manually
+          setIsFullscreen(true);
+        } else if (container.requestFullscreen) {
           await container.requestFullscreen();
         } else if ((container as any).webkitRequestFullscreen) {
           await (container as any).webkitRequestFullscreen();
+        } else if ((container as any).webkitEnterFullscreen) {
+          // Fallback for older Safari
+          (container as any).webkitEnterFullscreen();
         } else if ((container as any).mozRequestFullScreen) {
           await (container as any).mozRequestFullScreen();
         } else if ((container as any).msRequestFullscreen) {
           await (container as any).msRequestFullscreen();
+        } else if (videoElement && (videoElement as any).webkitEnterFullscreen) {
+          // Fallback: try video element fullscreen
+          (videoElement as any).webkitEnterFullscreen();
+          setIsFullscreen(true);
         }
       } else {
         // Exit fullscreen
-        if (document.exitFullscreen) {
+        // iOS Safari doesn't support programmatic exit, user must use native controls
+        if (isIOS) {
+          console.log('iOS Safari: User must exit fullscreen using native controls');
+          // On iOS, we can't programmatically exit, but we can update state if user exits
+          setIsFullscreen(false);
+        } else if (document.exitFullscreen) {
           await document.exitFullscreen();
         } else if ((document as any).webkitExitFullscreen) {
           await (document as any).webkitExitFullscreen();
@@ -607,6 +631,15 @@ export const VideoCall: React.FC = () => {
       }
     } catch (error) {
       console.error('Error toggling fullscreen:', error);
+      // If error occurs, try alternative method for iOS
+      if (isIOS && videoElement && (videoElement as any).webkitEnterFullscreen && !isFullscreen) {
+        try {
+          (videoElement as any).webkitEnterFullscreen();
+          setIsFullscreen(true);
+        } catch (e) {
+          console.error('iOS fullscreen fallback also failed:', e);
+        }
+      }
     }
   };
 
@@ -622,18 +655,51 @@ export const VideoCall: React.FC = () => {
       setIsFullscreen(isCurrentlyFullscreen);
     };
 
+    // iOS Safari doesn't fire fullscreenchange events reliably
+    // So we also listen to video element events
+    const handleVideoFullscreenChange = () => {
+      // Check if video is in fullscreen mode
+      const videoElement = hasRemoteVideo ? remoteVideoRef.current : localVideoRef.current;
+      if (videoElement) {
+        // On iOS, we can't reliably detect fullscreen state
+        // But we can check if the video is playing and assume it might be fullscreen
+        // This is a workaround for iOS limitations
+      }
+    };
+
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
     document.addEventListener('mozfullscreenchange', handleFullscreenChange);
     document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    // Listen to video element events for iOS Safari
+    const videoElement = hasRemoteVideo ? remoteVideoRef.current : localVideoRef.current;
+    const handleBeginFullscreen = () => {
+      console.log('iOS: Video entered fullscreen');
+      setIsFullscreen(true);
+    };
+    const handleEndFullscreen = () => {
+      console.log('iOS: Video exited fullscreen');
+      setIsFullscreen(false);
+    };
+    
+    if (videoElement && isIOS) {
+      videoElement.addEventListener('webkitbeginfullscreen', handleBeginFullscreen);
+      videoElement.addEventListener('webkitendfullscreen', handleEndFullscreen);
+    }
 
     return () => {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
       document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
       document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+      
+      if (videoElement && isIOS) {
+        videoElement.removeEventListener('webkitbeginfullscreen', handleBeginFullscreen);
+        videoElement.removeEventListener('webkitendfullscreen', handleEndFullscreen);
+      }
     };
-  }, []);
+  }, [hasRemoteVideo, isIOS]);
 
   console.log('VideoCall render - hasRemoteVideo:', hasRemoteVideo, 'hasLocalVideo:', hasLocalVideo);
   console.log('Remote stream:', remoteStream);
@@ -747,19 +813,31 @@ export const VideoCall: React.FC = () => {
       {/* Fullscreen Toggle Button - only show when remote video is active */}
       {hasRemoteVideo && status === 'active' && (
         <button
-          onClick={toggleFullscreen}
-          className={`absolute z-20 bg-black/60 hover:bg-black/80 backdrop-blur-md rounded-lg p-2 sm:p-2.5 border border-white/20 shadow-medium hover:shadow-strong transition-all duration-300 touch-manipulation ${
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('Fullscreen button clicked, isIOS:', isIOS, 'isFullscreen:', isFullscreen);
+            toggleFullscreen();
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('Fullscreen button touched, isIOS:', isIOS);
+            toggleFullscreen();
+          }}
+          className={`absolute z-20 bg-black/60 hover:bg-black/80 active:bg-black/90 backdrop-blur-md rounded-lg p-2 sm:p-2.5 border border-white/20 shadow-medium hover:shadow-strong transition-all duration-300 touch-manipulation ${
             isFullscreen 
               ? 'top-4 left-4 md:top-6 md:left-6' 
               : 'top-3 left-3 sm:top-4 sm:left-4'
           }`}
           aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+          style={{ WebkitTapHighlightColor: 'transparent' }}
         >
           {isFullscreen ? (
-            <Minimize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+            <Minimize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white pointer-events-none" />
           ) : (
-            <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+            <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white pointer-events-none" />
           )}
         </button>
       )}
