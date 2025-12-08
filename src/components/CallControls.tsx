@@ -80,7 +80,7 @@ export const CallControls: React.FC = () => {
 
   return (
     <>
-      <div className="bg-white/90 backdrop-blur-lg border-t border-secondary-200/50 shadow-strong p-4 xs:p-5 sm:p-6 md:p-8 safe-area-bottom relative z-10">
+      <div className="bg-white/90 backdrop-blur-lg border-t border-secondary-200/50 shadow-strong p-4 xs:p-5 sm:p-6 md:p-8 safe-area-bottom relative z-10 md:rounded-t-2xl">
         <div className="max-w-xl md:max-w-2xl lg:max-w-4xl mx-auto">
           {/* Mobile Layout: Stack vertically */}
           <div className="flex flex-col gap-3 xs:gap-4 sm:hidden md:hidden">

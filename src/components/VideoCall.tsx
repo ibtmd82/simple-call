@@ -708,11 +708,15 @@ export const VideoCall: React.FC = () => {
   return (
     <div 
       ref={videoCallContainerRef}
-      className={`bg-black rounded-2xl sm:rounded-3xl shadow-strong overflow-hidden w-full relative border-2 border-white/10 transition-all duration-300 ${
+      className={`bg-black rounded-2xl sm:rounded-3xl md:rounded-3xl shadow-strong overflow-hidden w-full relative border-2 border-white/10 transition-all duration-300 ${
         isFullscreen 
           ? 'video-fullscreen' 
-          : 'aspect-[4/3] sm:aspect-video md:aspect-video lg:aspect-video'
+          : 'h-full md:aspect-video lg:aspect-video'
       }`}
+      style={isFullscreen ? {} : { 
+        minHeight: '100%',
+        height: '100%'
+      }}
     >
       {/* Remote Video or Local Video (if no remote) */}
       <div className="absolute inset-0">
@@ -797,7 +801,7 @@ export const VideoCall: React.FC = () => {
       {hasLocalVideo && hasRemoteVideo && (
         <div className={`absolute bg-secondary-900 rounded-xl overflow-hidden border-2 border-white/30 shadow-strong backdrop-blur-sm transition-all duration-300 local-video-pip ${
           isFullscreen 
-            ? 'top-4 right-4 w-32 h-40 md:w-40 md:h-52 lg:w-48 lg:h-64' 
+            ? 'top-4 right-4 w-32 h-40 sm:w-36 sm:h-48 md:w-40 md:h-52 lg:w-48 lg:h-64' 
             : 'top-3 right-3 sm:top-4 sm:right-4 w-24 h-32 xs:w-28 xs:h-36 sm:w-36 sm:h-48 md:w-40 md:h-52'
         }`}>
           <video
@@ -810,7 +814,7 @@ export const VideoCall: React.FC = () => {
         </div>
       )}
 
-      {/* Fullscreen Toggle Button - only show when remote video is active */}
+      {/* Fullscreen Toggle Button - Show on all devices (mobile, iPad, desktop) when remote video is active */}
       {hasRemoteVideo && status === 'active' && (
         <button
           onClick={(e) => {
@@ -825,19 +829,19 @@ export const VideoCall: React.FC = () => {
             console.log('Fullscreen button touched, isIOS:', isIOS);
             toggleFullscreen();
           }}
-          className={`absolute z-20 bg-black/60 hover:bg-black/80 active:bg-black/90 backdrop-blur-md rounded-lg p-2 sm:p-2.5 border border-white/20 shadow-medium hover:shadow-strong transition-all duration-300 touch-manipulation ${
+          className={`absolute z-20 bg-black/60 hover:bg-black/80 active:bg-black/90 backdrop-blur-md rounded-lg p-2 sm:p-2.5 md:p-3 border border-white/20 shadow-medium hover:shadow-strong transition-all duration-300 touch-manipulation ${
             isFullscreen 
-              ? 'top-4 left-4 md:top-6 md:left-6' 
-              : 'top-3 left-3 sm:top-4 sm:left-4'
+              ? 'top-4 left-4 sm:top-6 sm:left-6 md:top-8 md:left-8' 
+              : 'top-3 left-3 sm:top-4 sm:left-4 md:top-6 md:left-6'
           }`}
           aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
           style={{ WebkitTapHighlightColor: 'transparent' }}
         >
           {isFullscreen ? (
-            <Minimize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white pointer-events-none" />
+            <Minimize2 className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7 text-white pointer-events-none" />
           ) : (
-            <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 text-white pointer-events-none" />
+            <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7 text-white pointer-events-none" />
           )}
         </button>
       )}

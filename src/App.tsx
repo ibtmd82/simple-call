@@ -131,20 +131,22 @@ function App() {
                    status === CallStatus.ENDED;
 
   return (
-    <div className={`min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 safe-area-top safe-area-bottom ${
-      isInCall ? 'call-screen-portrait md:call-screen-landscape' : ''
+    <div className={`min-h-screen safe-area-top safe-area-bottom ${
+      isInCall 
+        ? 'call-screen-fullscreen md:call-screen-contained bg-black md:bg-gradient-to-br md:from-blue-50 md:via-indigo-50 md:to-purple-50' 
+        : 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'
     }`}>
       <div className={`w-full mx-auto ${
         isInCall 
-          ? 'max-w-full px-0 py-0 md:px-4 md:py-4' 
-          : 'max-w-md px-2 sm:px-4 py-2 sm:py-4 md:max-w-2xl lg:max-w-4xl'
+          ? 'max-w-full px-0 py-0 md:max-w-4xl md:px-4 md:py-4 lg:max-w-6xl' 
+          : 'max-w-md px-2 sm:px-4 py-2 sm:py-4'
       }`}>
         {isInCall ? (
-          <div className="flex flex-col h-screen md:h-auto">
-            <div className="flex-1 flex items-center justify-center p-2 sm:p-4 md:p-6">
+          <div className="flex flex-col h-screen md:h-auto md:min-h-[600px]">
+            <div className="flex-1 flex items-center justify-center p-0 md:p-6">
               <VideoCall />
             </div>
-            <div className="mt-2 sm:mt-4 md:mt-6 flex-shrink-0">
+            <div className="flex-shrink-0 p-0 md:mt-6">
               <CallControls />
             </div>
           </div>
