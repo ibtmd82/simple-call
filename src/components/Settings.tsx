@@ -239,9 +239,9 @@ export const Settings: React.FC<SettingsProps> = ({ onClose }) => {
   const StatusIcon = statusInfo.icon;
 
   return (
-    <div className="bg-white/90 backdrop-blur-lg rounded-2xl sm:rounded-3xl shadow-strong border border-white/50 p-4 xs:p-5 sm:p-6 w-full max-w-md mx-auto animate-fade-in-up">
+    <div className="bg-white/90 backdrop-blur-lg rounded-2xl xs:rounded-3xl shadow-strong border border-white/50 p-4 xs:p-5 w-full max-w-md mx-auto animate-fade-in-up mobile-ui-only">
       {/* Header */}
-      <div className="flex items-center gap-3 xs:gap-3.5 mb-5 xs:mb-6 sm:mb-7">
+      <div className="flex items-center gap-3 xs:gap-3.5 mb-5 xs:mb-6">
         <div className="w-12 h-12 xs:w-14 xs:h-14 rounded-full bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center shadow-medium">
           <SettingsIcon className="w-6 h-6 xs:w-7 xs:h-7 text-white" />
         </div>

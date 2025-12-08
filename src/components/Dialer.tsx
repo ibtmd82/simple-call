@@ -82,27 +82,27 @@ export const Dialer: React.FC<DialerProps> = ({ onCall }) => {
   const isCallDisabled = !phoneNumber.trim() || !canMakeCall;
 
   return (
-    <div className="bg-white/90 backdrop-blur-lg rounded-2xl sm:rounded-3xl shadow-strong border border-white/50 p-4 xs:p-5 sm:p-6 w-full animate-fade-in-up">
-      {/* Header - Enhanced Design */}
-      <div className="text-center mb-4 xs:mb-5 sm:mb-6">
+    <div className="bg-white/90 backdrop-blur-lg rounded-2xl xs:rounded-3xl shadow-strong border border-white/50 p-4 xs:p-5 w-full animate-fade-in-up mobile-ui-only">
+      {/* Header - Mobile UI */}
+      <div className="text-center mb-4 xs:mb-5">
         <div className="inline-flex items-center justify-center w-16 h-16 xs:w-20 xs:h-20 rounded-full bg-gradient-to-br from-primary-500 to-primary-600 shadow-medium mb-3">
           <Phone className="w-8 h-8 xs:w-10 xs:h-10 text-white" />
         </div>
-        <h2 className="text-lg xs:text-xl sm:text-2xl font-bold bg-gradient-to-r from-primary-600 to-primary-800 bg-clip-text text-transparent mb-1">
+        <h2 className="text-lg xs:text-xl font-bold bg-gradient-to-r from-primary-600 to-primary-800 bg-clip-text text-transparent mb-1">
           Make a Call
         </h2>
         <p className="text-xs xs:text-sm text-secondary-500 mt-1">Enter number and tap to call</p>
       </div>
 
-      {/* Phone Number Display - Enhanced Design */}
-      <div className="mb-4 xs:mb-5 sm:mb-6">
-        <div className="bg-gradient-to-br from-secondary-50 to-secondary-100 rounded-2xl p-3 xs:p-4 sm:p-5 min-h-[56px] xs:min-h-[60px] sm:min-h-[70px] flex items-center justify-center border-2 border-secondary-200/50 shadow-soft transition-all duration-300 hover:border-primary-300 hover:shadow-medium">
+      {/* Phone Number Display - Mobile UI */}
+      <div className="mb-4 xs:mb-5">
+        <div className="bg-gradient-to-br from-secondary-50 to-secondary-100 rounded-2xl p-3 xs:p-4 min-h-[56px] xs:min-h-[60px] flex items-center justify-center border-2 border-secondary-200/50 shadow-soft transition-all duration-300 hover:border-primary-300 hover:shadow-medium">
           <input
             type="tel"
             value={phoneNumber}
             onChange={(e) => setPhoneNumber(e.target.value)}
             placeholder="Enter phone number"
-            className="text-xl xs:text-2xl sm:text-3xl font-mono font-semibold text-center bg-transparent border-none outline-none w-full text-secondary-900 placeholder-secondary-400"
+            className="text-xl xs:text-2xl font-mono font-semibold text-center bg-transparent border-none outline-none w-full text-secondary-900 placeholder-secondary-400"
             maxLength={20}
             inputMode="tel"
           />
@@ -119,15 +119,15 @@ export const Dialer: React.FC<DialerProps> = ({ onCall }) => {
         )}
       </div>
 
-      {/* Numpad - Enhanced Design */}
-      <div className="grid grid-cols-3 gap-2 xs:gap-2.5 sm:gap-3 mb-4 xs:mb-5 sm:mb-6">
+      {/* Numpad - Mobile UI */}
+      <div className="grid grid-cols-3 gap-2 xs:gap-2.5 mb-4 xs:mb-5">
         {numpadButtons.map(({ digit, letters }) => (
           <button
             key={digit}
             onClick={() => handleDigitPress(digit)}
-            className="aspect-square rounded-xl xs:rounded-2xl bg-gradient-to-br from-white to-secondary-50 hover:from-primary-50 hover:to-primary-100 active:from-primary-100 active:to-primary-200 border border-secondary-200/50 hover:border-primary-300 shadow-soft hover:shadow-medium active:shadow-soft transition-all duration-200 flex flex-col items-center justify-center group touch-manipulation min-h-[60px] xs:min-h-[64px] sm:min-h-[72px] scale-on-press"
+            className="aspect-square rounded-xl xs:rounded-2xl bg-gradient-to-br from-white to-secondary-50 hover:from-primary-50 hover:to-primary-100 active:from-primary-100 active:to-primary-200 border border-secondary-200/50 hover:border-primary-300 shadow-soft hover:shadow-medium active:shadow-soft transition-all duration-200 flex flex-col items-center justify-center group touch-manipulation min-h-[60px] xs:min-h-[64px] scale-on-press"
           >
-            <span className="text-xl xs:text-2xl sm:text-3xl font-bold text-secondary-900 group-hover:text-primary-700 group-active:scale-90 transition-all duration-150">
+            <span className="text-xl xs:text-2xl font-bold text-secondary-900 group-hover:text-primary-700 group-active:scale-90 transition-all duration-150">
               {digit}
             </span>
             {letters && (
@@ -139,27 +139,27 @@ export const Dialer: React.FC<DialerProps> = ({ onCall }) => {
         ))}
       </div>
 
-      {/* Action Buttons - Enhanced Design */}
-      <div className="flex items-center justify-center gap-3 xs:gap-4 sm:gap-5">
+      {/* Action Buttons - Mobile UI */}
+      <div className="flex items-center justify-center gap-3 xs:gap-4">
         {phoneNumber && (
           <button
             onClick={handleBackspace}
-            className="w-12 h-12 xs:w-14 xs:h-14 sm:w-16 sm:h-16 rounded-full bg-gradient-to-br from-secondary-100 to-secondary-200 hover:from-secondary-200 hover:to-secondary-300 active:from-secondary-300 active:to-secondary-400 border border-secondary-300/50 shadow-soft hover:shadow-medium active:scale-95 transition-all duration-200 flex items-center justify-center touch-manipulation smooth-hover"
+            className="w-12 h-12 xs:w-14 xs:h-14 rounded-full bg-gradient-to-br from-secondary-100 to-secondary-200 hover:from-secondary-200 hover:to-secondary-300 active:from-secondary-300 active:to-secondary-400 border border-secondary-300/50 shadow-soft hover:shadow-medium active:scale-95 transition-all duration-200 flex items-center justify-center touch-manipulation smooth-hover"
           >
-            <Backspace className="w-5 h-5 xs:w-6 xs:h-6 sm:w-7 sm:h-7 text-secondary-700" />
+            <Backspace className="w-5 h-5 xs:w-6 xs:h-6 text-secondary-700" />
           </button>
         )}
         
         <button
           onClick={handleCall}
           disabled={isCallDisabled}
-          className={`w-16 h-16 xs:w-18 xs:h-18 sm:w-20 sm:h-20 rounded-full flex items-center justify-center transition-all duration-300 touch-manipulation ripple smooth-hover ${
+          className={`w-16 h-16 xs:w-18 xs:h-18 rounded-full flex items-center justify-center transition-all duration-300 touch-manipulation ripple smooth-hover ${
             isCallDisabled
               ? 'bg-gradient-to-br from-secondary-200 to-secondary-300 text-secondary-400 cursor-not-allowed shadow-soft'
               : 'bg-gradient-to-br from-success-500 to-success-600 hover:from-success-600 hover:to-success-700 active:from-success-700 active:to-success-800 text-white shadow-strong hover:shadow-strong hover:scale-105 active:scale-95 animate-pulse-glow'
           }`}
         >
-          <Phone className="w-6 h-6 xs:w-7 xs:h-7 sm:w-8 sm:h-8" />
+          <Phone className="w-6 h-6 xs:w-7 xs:h-7" />
         </button>
       </div>
 
