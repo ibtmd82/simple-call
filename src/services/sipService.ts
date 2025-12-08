@@ -16,6 +16,11 @@ export class SIPService {
   private onStateChange?: (state: CallStatus) => void;
   private onRemoteStreamChange?: (stream: MediaStream | null) => void;
   private onLocalStreamChange?: (stream: MediaStream | null) => void;
+  private onUnregisteredCallback?: (reason: string, details?: any) => void;
+  private lastRegistrationTime: number | null = null;
+  private registrationExpiryTime: number | null = null;
+  private registrationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private registrationCheckInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.setupEventListeners();
@@ -127,8 +132,17 @@ export class SIPService {
           // Ensure UA is still set (it should be, but verify)
           if (!this.ua) {
             console.error('⚠️ UA is null in onConnect - this should not happen');
+            return;
           }
-          this.onStateChange?.(CallStatus.REGISTERED);
+          this.onStateChange?.(CallStatus.CONNECTED);
+          // Ensure we're registered after reconnection
+          if (!this.isExplicitlyDisconnecting && !this.isInCall()) {
+            setTimeout(() => {
+              this.autoRegisterIfNeeded().catch(err => {
+                console.error('Auto-register on reconnect failed:', err);
+              });
+            }, 1000);
+          }
         },
         onDisconnect: () => {
           console.log('Đã ngắt kết nối khỏi máy chủ SIP');
@@ -203,44 +217,58 @@ export class SIPService {
       this.registerer = new Registerer(this.ua, {
       });
 
+      // Listen to registration state changes
       this.registerer.stateChange.addListener((state) => {
-        console.log(`Trạng thái Registerer thay đổi: ${state}`);
+        console.log(`📋 Registerer state changed: ${state}`);
         switch (state) {
           case 'Registered':
             this.isReregistering = false;
             this.isAutoRegistering = false;
-            console.log('✅ Registerer is now Registered, updating status to REGISTERED');
+            this.lastRegistrationTime = Date.now();
+            // Try to get registration expiry from the registerer
+            if (this.registerer) {
+              const expires = (this.registerer as any).expires;
+              if (expires && expires > 0) {
+                this.registrationExpiryTime = this.lastRegistrationTime + (expires * 1000);
+                console.log(`✅ Registered successfully. Expires in ${expires} seconds (at ${new Date(this.registrationExpiryTime).toLocaleString()})`);
+                // Schedule refresh at 50% of expiry time to prevent expiration
+                this.scheduleRegistrationRefresh(expires);
+              } else {
+                console.log('✅ Registered successfully');
+                // Default to 30 seconds refresh if expiry not available
+                this.scheduleRegistrationRefresh(60);
+              }
+            }
+            // Start periodic registration check
+            this.startPeriodicRegistrationCheck();
             this.onStateChange?.(CallStatus.REGISTERED);
             break;
           case 'Unregistered':
-            if (!this.isExplicitlyDisconnecting && !this.isReregistering && !this.isAutoRegistering) {
-              console.log('Đã hủy đăng ký khỏi máy chủ SIP');
-              this.onStateChange?.(CallStatus.UNREGISTERED);
-              // Only auto-reregister if not in a call
-              if (!this.isInCall()) {
-              console.log('Hủy đăng ký không mong muốn, đang thử đăng ký lại...');
-              this.isReregistering = true;
-              setTimeout(() => {
-                  if (this.registerer && !this.isExplicitlyDisconnecting && !this.isInCall()) {
-                  try {
-                    this.registerer.register();
-                  } catch (error) {
-                    console.error('Đăng ký lại thất bại:', error);
-                    this.isReregistering = false;
-                    this.onStateChange?.(CallStatus.FAILED);
-                  }
-                  } else {
-                    this.isReregistering = false;
-                }
-              }, 2000);
-              }
-            }
+            this.handleUnregistered();
             break;
           case 'Terminated':
+            console.log('⚠️ Registerer terminated');
             this.onStateChange?.(CallStatus.ENDED);
             break;
         }
       });
+
+      // Also listen to registration request/response events for better tracking
+      if (this.registerer) {
+        // Listen for registration response events to track expiry time
+        (this.registerer as any).onRegisterResponse?.((response: any) => {
+          if (response && response.message) {
+            const expires = response.message.getHeader('Expires');
+            if (expires) {
+              const expiresValue = parseInt(expires, 10);
+              this.registrationExpiryTime = Date.now() + (expiresValue * 1000);
+              console.log(`📋 Registration response received. Expires in ${expiresValue} seconds`);
+              // Reschedule refresh based on actual expiry
+              this.scheduleRegistrationRefresh(expiresValue);
+            }
+          }
+        });
+      }
 
       console.log('Bắt đầu khởi động UserAgent...');
       await this.ua.start();
@@ -304,6 +332,9 @@ export class SIPService {
   async disconnect(): Promise<void> {
     console.log('Ngắt kết nối khỏi máy chủ SIP...');
     this.isExplicitlyDisconnecting = true;
+
+    // Stop periodic registration checks
+    this.stopPeriodicRegistrationCheck();
 
     if (this.currentSession) {
       await this.currentSession.terminate();
@@ -3124,6 +3155,9 @@ export class SIPService {
     
     this.isCleaningUp = true;
     console.log('Dọn dẹp tài nguyên cuộc gọi...');
+    
+    // Note: We don't stop registration timers here because we want to maintain registration
+    // even after call cleanup. Timers are only stopped on explicit disconnect.
 
     // Use captured references if provided (for outbound calls where session may be disposed)
     // Otherwise fall back to current session and current streams
@@ -3525,6 +3559,295 @@ export class SIPService {
 
   isRegistered(): boolean {
     return this.registerer?.state === 'Registered' || false;
+  }
+
+  /**
+   * Handle unregistration event - detects if it's due to idle timeout or other reasons
+   * Feature 2: When unregistered event detection, re-register
+   */
+  private handleUnregistered(): void {
+    if (this.isExplicitlyDisconnecting || this.isReregistering || this.isAutoRegistering) {
+      console.log('🔌 Unregistration is expected (explicit disconnect or re-registering)');
+      return;
+    }
+
+    const now = Date.now();
+    let reason = 'unknown';
+    let details: any = {};
+
+    // Check if unregistration is due to idle timeout
+    if (this.registrationExpiryTime && now >= this.registrationExpiryTime) {
+      const idleTime = Math.floor((now - (this.registrationExpiryTime || now)) / 1000);
+      reason = 'idle_timeout';
+      details = {
+        idleTimeSeconds: idleTime,
+        lastRegistrationTime: this.lastRegistrationTime ? new Date(this.lastRegistrationTime).toISOString() : null,
+        expectedExpiryTime: this.registrationExpiryTime ? new Date(this.registrationExpiryTime).toISOString() : null,
+        actualTime: new Date(now).toISOString()
+      };
+      console.log(`⏰ Unregistered due to idle timeout. Idle for ${idleTime} seconds`);
+    } else if (this.lastRegistrationTime) {
+      const timeSinceRegistration = Math.floor((now - this.lastRegistrationTime) / 1000);
+      reason = 'server_unregistered';
+      details = {
+        timeSinceRegistrationSeconds: timeSinceRegistration,
+        lastRegistrationTime: new Date(this.lastRegistrationTime).toISOString(),
+        actualTime: new Date(now).toISOString()
+      };
+      console.log(`🔌 Unregistered by server after ${timeSinceRegistration} seconds of registration`);
+    } else {
+      reason = 'unknown';
+      details = {
+        actualTime: new Date(now).toISOString()
+      };
+      console.log('⚠️ Unregistered for unknown reason');
+    }
+
+    // Call the unregistration callback
+    this.onUnregisteredCallback?.(reason, details);
+
+    // Update state
+    this.onStateChange?.(CallStatus.UNREGISTERED);
+
+    // Feature 2: When unregistered event detected, re-register
+    // Auto-reregister if not in a call - with aggressive retry
+    if (!this.isInCall()) {
+      console.log('🔄 Unregistered event detected - attempting to re-register immediately...');
+      this.attemptReRegistration(0); // Start with no delay for first attempt
+    } else {
+      console.log('📞 Unregistered event detected but currently in a call - will re-register after call ends');
+      // Schedule re-registration after call ends
+      const checkCallEnd = setInterval(() => {
+        if (!this.isInCall() && !this.isExplicitlyDisconnecting) {
+          clearInterval(checkCallEnd);
+          console.log('🔄 Call ended - now attempting re-registration...');
+          this.attemptReRegistration(0);
+        }
+      }, 1000);
+      // Clear interval after 60 seconds to prevent infinite loop
+      setTimeout(() => {
+        clearInterval(checkCallEnd);
+      }, 60000);
+    }
+  }
+
+  /**
+   * Attempt re-registration with exponential backoff
+   */
+  private attemptReRegistration(attempt: number, maxAttempts: number = 5): void {
+    if (this.isExplicitlyDisconnecting || this.isInCall()) {
+      this.isReregistering = false;
+      return;
+    }
+
+    if (attempt >= maxAttempts) {
+      console.error('❌ Max re-registration attempts reached');
+      this.isReregistering = false;
+      this.onStateChange?.(CallStatus.FAILED);
+      // Still try auto-register as fallback
+      setTimeout(() => {
+        this.autoRegisterIfNeeded().catch(err => {
+          console.error('Auto-register fallback failed:', err);
+        });
+      }, 5000);
+      return;
+    }
+
+    const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
+    console.log(`🔄 Re-registration attempt ${attempt + 1}/${maxAttempts} (delay: ${delay}ms)`);
+
+    setTimeout(() => {
+      if (this.isExplicitlyDisconnecting || this.isInCall()) {
+        this.isReregistering = false;
+        return;
+      }
+
+      if (!this.registerer) {
+        console.log('⚠️ Registerer not available, trying full reconnect...');
+        this.isReregistering = false;
+        if (this.lastSipConfig) {
+          this.connect(this.lastSipConfig).catch(err => {
+            console.error('Full reconnect failed:', err);
+            this.attemptReRegistration(attempt + 1, maxAttempts);
+          });
+        }
+        return;
+      }
+
+      if (!this.ua || !this.ua.isConnected()) {
+        console.log('⚠️ UA not connected, trying to reconnect...');
+        this.isReregistering = false;
+        if (this.lastSipConfig) {
+          this.connect(this.lastSipConfig).catch(err => {
+            console.error('Reconnect failed:', err);
+            this.attemptReRegistration(attempt + 1, maxAttempts);
+          });
+        }
+        return;
+      }
+
+      this.isReregistering = true;
+      try {
+        this.registerer.register().then(() => {
+          console.log('✅ Re-registration successful');
+          this.isReregistering = false;
+        }).catch((error) => {
+          console.error(`❌ Re-registration attempt ${attempt + 1} failed:`, error);
+          this.isReregistering = false;
+          this.attemptReRegistration(attempt + 1, maxAttempts);
+        });
+      } catch (error) {
+        console.error(`❌ Re-registration attempt ${attempt + 1} error:`, error);
+        this.isReregistering = false;
+        this.attemptReRegistration(attempt + 1, maxAttempts);
+      }
+    }, delay);
+  }
+
+  /**
+   * Schedule registration refresh before expiry
+   */
+  private scheduleRegistrationRefresh(expiresSeconds: number): void {
+    // Clear existing timer
+    if (this.registrationRefreshTimer) {
+      clearTimeout(this.registrationRefreshTimer);
+      this.registrationRefreshTimer = null;
+    }
+
+    // Refresh at 50% of expiry time to prevent expiration
+    const refreshDelay = Math.max(expiresSeconds * 500, 15000); // At least 15 seconds, or 50% of expiry
+    console.log(`⏰ Scheduling registration refresh in ${Math.floor(refreshDelay / 1000)} seconds`);
+
+    this.registrationRefreshTimer = setTimeout(() => {
+      this.refreshRegistration();
+    }, refreshDelay);
+  }
+
+  /**
+   * Refresh registration before it expires
+   */
+  private async refreshRegistration(): Promise<void> {
+    if (this.isExplicitlyDisconnecting || this.isInCall()) {
+      console.log('⏸️ Skipping registration refresh - disconnecting or in call');
+      return;
+    }
+
+    if (!this.registerer || !this.ua || !this.ua.isConnected()) {
+      console.log('⚠️ Cannot refresh registration - registerer or UA not available');
+      // Try to reconnect
+      if (this.lastSipConfig) {
+        this.autoRegisterIfNeeded().catch(err => {
+          console.error('Auto-register after refresh failure:', err);
+        });
+      }
+      return;
+    }
+
+    const currentState = String(this.registerer.state);
+    if (currentState === 'Registered' || currentState.includes('Registered')) {
+      console.log('🔄 Refreshing registration to prevent expiry...');
+      try {
+        this.isReregistering = true;
+        await this.registerer.register();
+        this.isReregistering = false;
+        console.log('✅ Registration refreshed successfully');
+      } catch (error) {
+        console.error('❌ Registration refresh failed:', error);
+        this.isReregistering = false;
+        // Retry refresh
+        setTimeout(() => {
+          this.refreshRegistration();
+        }, 5000);
+      }
+    } else {
+      console.log('⚠️ Not registered, attempting full registration...');
+      this.autoRegisterIfNeeded().catch(err => {
+        console.error('Auto-register after state check failed:', err);
+      });
+    }
+  }
+
+  /**
+   * Start periodic check to ensure we're always registered
+   * Feature 1: Periodically check state - if state is not registered, re-register
+   */
+  private startPeriodicRegistrationCheck(): void {
+    // Clear existing interval
+    if (this.registrationCheckInterval) {
+      clearInterval(this.registrationCheckInterval);
+      this.registrationCheckInterval = null;
+    }
+
+    console.log('🔄 Starting periodic registration check (every 30 seconds)');
+
+    // Check every 30 seconds if we're still registered
+    this.registrationCheckInterval = setInterval(() => {
+      if (this.isExplicitlyDisconnecting) {
+        console.log('⏸️ Stopping periodic check - explicitly disconnecting');
+        this.stopPeriodicRegistrationCheck();
+        return;
+      }
+
+      if (!this.registerer || !this.ua) {
+        console.log('⚠️ Periodic check: Registerer or UA not available');
+        return;
+      }
+
+      const currentState = String(this.registerer.state);
+      const isConnected = this.ua.isConnected();
+
+      if (!isConnected) {
+        console.log('⚠️ Periodic check: UA disconnected, attempting reconnect...');
+        if (this.lastSipConfig) {
+          this.autoRegisterIfNeeded().catch(err => {
+            console.error('Auto-register on disconnect check failed:', err);
+          });
+        }
+        return;
+      }
+
+      // Feature 1: Check if state is not registered, then re-register
+      if (currentState !== 'Registered' && !currentState.includes('Registered')) {
+        console.log(`⚠️ Periodic check: Registration lost (state: ${currentState}), attempting re-registration...`);
+        if (!this.isInCall() && !this.isReregistering && !this.isAutoRegistering) {
+          console.log('🔄 Periodic check: Triggering re-registration...');
+          this.autoRegisterIfNeeded().catch(err => {
+            console.error('Auto-register on state check failed:', err);
+            // If auto-register fails, try direct re-registration
+            if (this.registerer && !this.isReregistering) {
+              this.attemptReRegistration(0);
+            }
+          });
+        } else {
+          console.log(`⏸️ Periodic check: Skipping re-registration (inCall: ${this.isInCall()}, reregistering: ${this.isReregistering}, autoRegistering: ${this.isAutoRegistering})`);
+        }
+      } else {
+        // Still registered, just log for debugging (can be removed in production)
+        // console.log('✅ Periodic check: Still registered');
+      }
+    }, 30000); // Check every 30 seconds
+  }
+
+  /**
+   * Stop periodic registration check
+   */
+  private stopPeriodicRegistrationCheck(): void {
+    if (this.registrationCheckInterval) {
+      clearInterval(this.registrationCheckInterval);
+      this.registrationCheckInterval = null;
+    }
+    if (this.registrationRefreshTimer) {
+      clearTimeout(this.registrationRefreshTimer);
+      this.registrationRefreshTimer = null;
+    }
+  }
+
+  /**
+   * Set callback for unregistration events
+   * @param callback Function called when unregistered, receives (reason: string, details?: any)
+   */
+  onUnregistered(callback: (reason: string, details?: any) => void): void {
+    this.onUnregisteredCallback = callback;
   }
 
   onStateChanged(callback: (state: CallStatus) => void): void {

@@ -56,6 +56,21 @@ function App() {
               }
             }
           });
+          
+          // Set up unregistration callback to catch idle timeout events
+          sipService.onUnregistered((reason, details) => {
+            console.log('🔌 Unregistration event caught:', reason, details);
+            if (reason === 'idle_timeout') {
+              console.warn(`⏰ Unregistered due to idle timeout after ${details.idleTimeSeconds} seconds`);
+              // You can add custom handling here, e.g., show notification to user
+              // or trigger re-registration with different strategy
+            } else if (reason === 'server_unregistered') {
+              console.warn(`🔌 Server unregistered client after ${details.timeSinceRegistrationSeconds} seconds`);
+            } else {
+              console.warn('⚠️ Unregistered for unknown reason');
+            }
+          });
+          
           await sipService.connect(config);
         } else {
           console.log('Incomplete SIP configuration. User must configure manually in Settings.');
