@@ -297,7 +297,34 @@ export class SIPService {
           this.onStateChange?.(CallStatus.CONNECTED);
         },
         onDisconnect: () => {
-          console.log('Đã ngắt kết nối khỏi máy chủ SIP');
+          console.log('🔌 WebSocket disconnected from SIP server');
+          
+          // Get more details about the disconnect
+          const transport = (this.ua as any)?.transport;
+          if (transport) {
+            const transportState = transport.state;
+            console.log('📞 Transport state on disconnect:', transportState);
+            console.log('📞 Transport details:', {
+              state: transportState,
+              server: transport.server,
+              isConnected: transport.isConnected?.() || false
+            });
+          }
+          
+          // Log current session state
+          if (this.currentSession) {
+            const sessionState = this.currentSession.state;
+            const sessionId = (this.currentSession as any).id;
+            console.log('📞 Session state on disconnect:', {
+              sessionId: sessionId,
+              state: sessionState,
+              isInviter: this.currentSession instanceof Inviter,
+              isInvitation: this.currentSession instanceof Invitation
+            });
+          } else {
+            console.log('📞 No active session on disconnect');
+          }
+          
           // CRITICAL: If we're in a call and connection is lost, show state transitions and clean up
           // This ensures camera is released even if session doesn't terminate immediately
           // But skip if hangup was already called (prevents duplicate state transitions)
@@ -345,6 +372,7 @@ export class SIPService {
           } else if (this.currentSession && this.currentSession.state === 'Establishing') {
             // Call is still being set up - don't clean up, let SIP.js handle reconnection
             console.log('⚠️ Connection lost during call setup - waiting for reconnection, not cleaning up');
+            console.log('⚠️ WebSocket closed right after sending INVITE - SIP.js will handle reconnection');
             // Don't change status - keep it in RINGING/CALLING state
             // The call might still complete after reconnection
             return; // Exit early, don't change status to UNREGISTERED
@@ -455,6 +483,84 @@ export class SIPService {
 
       console.log('Bắt đầu khởi động UserAgent...');
       await this.ua.start();
+      
+      // Add transport state change listener to track WebSocket closures
+      const transport = (this.ua as any)?.transport;
+      if (transport && transport.stateChange) {
+        transport.stateChange.addListener((state: string) => {
+          const wsSocket = transport?.socket;
+          const wsReadyState = wsSocket?.readyState;
+          let closeCode = wsSocket?.closeCode;
+          let closeReason = wsSocket?.closeReason;
+          
+          // Try to access close code from transport's internal state
+          // SIP.js might store it in transport._closeCode or transport.closeCode
+          if (closeCode === undefined) {
+            closeCode = (transport as any)?._closeCode || (transport as any)?.closeCode;
+          }
+          if (closeReason === undefined) {
+            closeReason = (transport as any)?._closeReason || (transport as any)?.closeReason;
+          }
+          
+          // Also try to access from transport's internal websocket reference (_ws)
+          if (closeCode === undefined && (transport as any)?._ws) {
+            const ws = (transport as any)._ws;
+            closeCode = ws?.closeCode;
+            closeReason = ws?.closeReason;
+            
+            // Also check if _ws has a _closeCode property
+            if (closeCode === undefined) {
+              closeCode = ws?._closeCode;
+            }
+            if (closeReason === undefined) {
+              closeReason = ws?._closeReason;
+            }
+          }
+          
+          console.log('📡 Transport state changed:', state, {
+            wsReadyState: wsReadyState !== undefined ? wsReadyState : 'N/A',
+            wsReadyStateText: wsReadyState === 0 ? 'CONNECTING' : wsReadyState === 1 ? 'OPEN' : wsReadyState === 2 ? 'CLOSING' : wsReadyState === 3 ? 'CLOSED' : 'N/A',
+            closeCode: closeCode !== undefined ? closeCode : 'N/A',
+            closeReason: closeReason || 'N/A',
+            transportKeys: transport ? Object.keys(transport).filter(k => k.includes('close') || k.includes('Close') || k.includes('ws') || k.includes('Ws')).join(', ') : 'N/A'
+          });
+          
+          if (state === 'Disconnected' || state === 'Disconnecting') {
+            const sessionState = this.currentSession?.state;
+            const sessionId = this.currentSession ? (this.currentSession as any).id : 'none';
+            const isEstablishing = sessionState === 'Establishing';
+            
+            console.log('🔌 WebSocket transport disconnected:', {
+              state: state,
+              sessionState: sessionState,
+              sessionId: sessionId,
+              isHangingUp: this.isHangingUp,
+              isEstablishing: isEstablishing,
+              closeCode: closeCode !== undefined ? closeCode : 'N/A',
+              closeReason: closeReason || 'N/A',
+              wsReadyState: wsReadyState !== undefined ? wsReadyState : 'N/A'
+            });
+            
+            if (isEstablishing) {
+              console.error('❌ CRITICAL: WebSocket closed during call setup (Establishing state)!');
+              console.error('❌ This will prevent the call from completing.');
+              console.error('❌ Close code:', closeCode !== undefined ? closeCode : 'unknown (1006 = abnormal closure, usually server-side)');
+              console.error('❌ Close reason:', closeReason || 'none');
+              console.error('❌ This is likely a server-side issue - the server closed the connection after receiving INVITE');
+              console.error('❌ Possible causes: server timeout, large SDP, or server policy');
+            }
+            
+            // If we just sent an INVITE and WebSocket closes, log it
+            if (sessionState === 'Establishing') {
+              console.error('❌ WebSocket closed during call setup (Establishing state)');
+              console.error('❌ This will cause the call to get stuck - SIP.js will attempt reconnection');
+            }
+          } else if (state === 'Connected') {
+            console.log('✅ WebSocket transport connected');
+          }
+        });
+        console.log('✅ Transport state change listener added');
+      }
       
       // Wait for connection before registering
       await new Promise<void>((resolve, reject) => {
@@ -1157,52 +1263,79 @@ export class SIPService {
             console.log('📞 No original onAccept handler - SIP.js will send ACK automatically');
           }
           
-          // Verify dialog state - ACK should be sent automatically when dialog is created
+          // Verify dialog state and ACK sending - ACK should be sent automatically when dialog is created
           // Check dialog immediately and also after a short delay to catch async creation
           const checkDialog = () => {
             const dialog = (inviter as any).dialog;
             if (dialog) {
-              // Use dialogState instead of state (dialog.state may be undefined)
-              const dialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+              // Check dialog state using 'early' property (false = confirmed, true = early)
+              const dialogEarly = dialog.early;
               const dialogStateObj = dialog.dialogState;
+              let dialogState: string | undefined;
               
-              console.log('📞 Dialog state after 200 OK:', dialogState);
-              console.log('📞 Dialog details:', {
+              // Use 'early' property as primary indicator
+              if (dialogEarly === false) {
+                dialogState = 'Confirmed';
+              } else if (dialogEarly === true) {
+                dialogState = 'Early';
+              } else if (typeof dialogStateObj === 'string') {
+                dialogState = dialogStateObj;
+              } else if (dialogStateObj?.state) {
+                dialogState = String(dialogStateObj.state);
+              } else if (dialog.state) {
+                dialogState = String(dialog.state);
+              } else if (typeof dialogStateObj === 'object') {
+                dialogState = String(dialogStateObj);
+              }
+              
+              const ackWait = (dialog as any).ackWait;
+              const ackProcessing = (dialog as any).ackProcessing;
+              
+              console.log('📞 Outbound call - Dialog state after 200 OK:', dialogState);
+              console.log('📞 Outbound call - Dialog details:', {
                 callId: dialog.callId,
                 localTag: dialog.localTag,
                 remoteTag: dialog.remoteTag,
                 state: dialog.state,
+                early: dialogEarly,
+                earlyType: typeof dialogEarly,
                 dialogState: dialogState,
+                dialogStateType: typeof dialogState,
                 dialogStateObj: dialogStateObj,
+                dialogStateObjKeys: dialogStateObj ? Object.keys(dialogStateObj) : 'no object',
                 hasState: 'state' in dialog,
-                hasDialogState: 'dialogState' in dialog
-              });
-              
-              // Check if ACK wait timer exists (SIP.js uses this to track ACK sending)
-              const ackWait = (dialog as any).ackWait;
-              const ackProcessing = (dialog as any).ackProcessing;
-              console.log('📞 ACK status:', {
+                hasDialogState: 'dialogState' in dialog,
                 ackWait: !!ackWait,
-                ackProcessing: !!ackProcessing,
-                hasAckWait: 'ackWait' in dialog,
-                hasAckProcessing: 'ackProcessing' in dialog
+                ackProcessing: !!ackProcessing
               });
               
-              // Verify ACK will be sent - SIP.js should handle this automatically
-              // Check both dialog.state and dialog.dialogState.state
-              const isEarly = dialogState === 'Early' || dialogStateObj?.state === 'Early';
-              const isConfirmed = dialogState === 'Confirmed' || dialogStateObj?.state === 'Confirmed';
+              // Check if ACK was sent using 'early' property
+              const isConfirmed = dialogEarly === false || 
+                                 dialogState === 'Confirmed' || 
+                                 (dialogStateObj && String(dialogStateObj).includes('Confirmed'));
+              const isEarly = dialogEarly === true || 
+                             dialogState === 'Early' || 
+                             (dialogStateObj && String(dialogStateObj).includes('Early'));
               
-              if (isEarly || isConfirmed) {
-                console.log('✅ Dialog is in valid state for ACK - SIP.js should send ACK automatically');
-                if (isConfirmed) {
-                  console.log('✅ Dialog is already Confirmed - ACK was sent successfully');
-                } else {
-                  console.log('📞 Dialog is in Early state - ACK should be sent soon');
-                }
+              if (isConfirmed) {
+                console.log('✅✅✅ ACK SENT: Dialog is Confirmed - ACK was sent successfully!');
+                console.log('✅✅✅ Outbound call dialog is fully confirmed (early=false)');
+              } else if (isEarly) {
+                console.log('⏳ ACK PENDING: Dialog is in Early state - ACK should be sent soon');
+                console.log('⏳ SIP.js will automatically send ACK to confirm the dialog');
               } else {
-                console.warn(`⚠️ Dialog is in unexpected state: ${dialogState} - ACK may not be sent!`);
+                console.warn(`⚠️ Dialog state unclear: ${dialogState} - checking ACK status...`);
+                console.warn('⚠️ Dialog early property:', dialogEarly);
                 console.warn('⚠️ Dialog state object:', dialogStateObj);
+                
+                // Check if ACK is being processed
+                if (ackProcessing) {
+                  console.log('📞 ACK is being processed by SIP.js');
+                } else if (ackWait) {
+                  console.warn('⚠️ ACK is still waiting to be sent');
+                } else {
+                  console.log('📞 ACK status unknown - SIP.js should handle it automatically');
+                }
               }
             } else {
               console.warn('⚠️ No dialog found after 200 OK - ACK may not be sent!');
@@ -1218,6 +1351,7 @@ export class SIPService {
           setTimeout(checkDialog, 100);
           setTimeout(checkDialog, 200);
           setTimeout(checkDialog, 500);
+          setTimeout(checkDialog, 1000);
         },
         // Handle call rejection (e.g., 404 Not Found, remote not registered)
         onReject: (response: any) => {
@@ -1324,10 +1458,101 @@ export class SIPService {
       console.log('✅ WebSocket connection verified as stable, proceeding with INVITE');
       
       try {
+        // Log WebSocket state before sending INVITE
+        const transport = (this.ua as any)?.transport;
+        const wsStateBefore = transport?.state;
+        const wsConnectedBefore = this.ua.isConnected();
+        const wsSocket = transport?.socket; // Access underlying WebSocket if available
+        const wsReadyState = wsSocket?.readyState; // 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+        
+        console.log('📞 WebSocket state before INVITE:', {
+          state: wsStateBefore,
+          isConnected: wsConnectedBefore,
+          transportExists: !!transport,
+          wsReadyState: wsReadyState !== undefined ? wsReadyState : 'N/A',
+          wsReadyStateText: wsReadyState === 0 ? 'CONNECTING' : wsReadyState === 1 ? 'OPEN' : wsReadyState === 2 ? 'CLOSING' : wsReadyState === 3 ? 'CLOSED' : 'N/A'
+        });
+        
+        // Get SDP size before sending (if available)
+        const sdh = (inviter as any).sessionDescriptionHandler;
+        const peerConnection = sdh?.peerConnection;
+        const localDescription = peerConnection?.localDescription;
+        const sdpSize = localDescription?.sdp?.length || 0;
+        console.log('📞 SDP size before INVITE:', sdpSize, 'bytes');
+        
         await inviter.invite();
         console.log('✅ INVITE sent successfully, waiting for response...');
+        
+        // Immediately check WebSocket state after sending INVITE
+        const wsStateAfter = transport?.state;
+        const wsConnectedAfter = this.ua.isConnected();
+        const wsReadyStateAfter = wsSocket?.readyState;
+        
+        console.log('📞 WebSocket state immediately after INVITE:', {
+          state: wsStateAfter,
+          isConnected: wsConnectedAfter,
+          stateChanged: wsStateBefore !== wsStateAfter,
+          connectionLost: wsConnectedBefore && !wsConnectedAfter,
+          wsReadyState: wsReadyStateAfter !== undefined ? wsReadyStateAfter : 'N/A',
+          wsReadyStateText: wsReadyStateAfter === 0 ? 'CONNECTING' : wsReadyStateAfter === 1 ? 'OPEN' : wsReadyStateAfter === 2 ? 'CLOSING' : wsReadyStateAfter === 3 ? 'CLOSED' : 'N/A',
+          wsClosed: wsReadyStateAfter === 3 || wsStateAfter === 'Disconnected'
+        });
+        
+        // Monitor WebSocket for a short period to detect immediate closures
+        setTimeout(() => {
+          const wsStateDelayed = transport?.state;
+          const wsConnectedDelayed = this.ua.isConnected();
+          const wsReadyStateDelayed = wsSocket?.readyState;
+          const closeCode = wsSocket?.closeCode;
+          const closeReason = wsSocket?.closeReason;
+          
+          console.log('📞 WebSocket state 500ms after INVITE:', {
+            state: wsStateDelayed,
+            isConnected: wsConnectedDelayed,
+            stillConnected: wsStateDelayed === 'Connected' && wsConnectedDelayed,
+            wsReadyState: wsReadyStateDelayed !== undefined ? wsReadyStateDelayed : 'N/A',
+            wsReadyStateText: wsReadyStateDelayed === 0 ? 'CONNECTING' : wsReadyStateDelayed === 1 ? 'OPEN' : wsReadyStateDelayed === 2 ? 'CLOSING' : wsReadyStateDelayed === 3 ? 'CLOSED' : 'N/A',
+            closed: wsReadyStateDelayed === 3 || wsStateDelayed === 'Disconnected',
+            closeCode: closeCode !== undefined ? closeCode : 'N/A',
+            closeReason: closeReason || 'N/A'
+          });
+          
+          if (wsReadyStateDelayed === 3 || wsStateDelayed === 'Disconnected') {
+            console.error('❌ WebSocket closed within 500ms of sending INVITE! This will break the call.');
+            console.error('❌ Close code:', closeCode !== undefined ? closeCode : 'unknown');
+            console.error('❌ Close reason:', closeReason || 'none');
+            console.error('❌ This is likely a server-side issue or network problem.');
+          }
+        }, 500);
+        
+        // Also check after 1 second
+        setTimeout(() => {
+          const wsState1s = transport?.state;
+          const wsConnected1s = this.ua.isConnected();
+          const wsReadyState1s = wsSocket?.readyState;
+          const closeCode1s = wsSocket?.closeCode;
+          const closeReason1s = wsSocket?.closeReason;
+          
+          console.log('📞 WebSocket state 1s after INVITE:', {
+            state: wsState1s,
+            isConnected: wsConnected1s,
+            stillConnected: wsState1s === 'Connected' && wsConnected1s,
+            wsReadyState: wsReadyState1s !== undefined ? wsReadyState1s : 'N/A',
+            wsReadyStateText: wsReadyState1s === 0 ? 'CONNECTING' : wsReadyState1s === 1 ? 'OPEN' : wsReadyState1s === 2 ? 'CLOSING' : wsReadyState1s === 3 ? 'CLOSED' : 'N/A',
+            closeCode: closeCode1s !== undefined ? closeCode1s : 'N/A',
+            closeReason: closeReason1s || 'N/A'
+          });
+        }, 1000);
       } catch (error) {
         console.error('❌ Error sending INVITE:', error);
+        // Check WebSocket state on error
+        const transport = (this.ua as any)?.transport;
+        const wsStateOnError = transport?.state;
+        const wsConnectedOnError = this.ua.isConnected();
+        console.error('📞 WebSocket state on INVITE error:', {
+          state: wsStateOnError,
+          isConnected: wsConnectedOnError
+        });
         throw error;
       }
       
@@ -1543,7 +1768,44 @@ export class SIPService {
         },
       };
 
+      console.log('📞 Sending 200 OK (accepting call)...');
       await (sessionToAnswer as any).accept(options);
+      console.log('✅ 200 OK sent - waiting for ACK from remote side...');
+      
+      // Monitor dialog state to detect when ACK is received
+      const dialog = (sessionToAnswer as any).dialog;
+      if (dialog) {
+        const initialDialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+        console.log('📞 Dialog state immediately after sending 200 OK:', initialDialogState);
+        console.log('📞 ACK status:', {
+          ackWait: !!dialog.ackWait,
+          ackProcessing: !!dialog.ackProcessing,
+          hasAckWait: 'ackWait' in dialog,
+          hasAckProcessing: 'ackProcessing' in dialog
+        });
+        
+        // Monitor for ACK reception
+        const monitorAck = () => {
+          const currentDialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+          if (currentDialogState === 'Confirmed' || dialog.dialogState?.state === 'Confirmed') {
+            console.log('✅✅✅ ACK RECEIVED: Dialog transitioned to Confirmed - Remote side sent ACK!');
+            console.log('✅✅✅ Inbound call dialog is fully confirmed');
+          } else {
+            console.log(`⏳ Still waiting for ACK... Dialog state: ${currentDialogState}`);
+            console.log('⏳ Remote side should send ACK to confirm the dialog');
+          }
+        };
+        
+        // Check immediately and periodically
+        setTimeout(monitorAck, 50);
+        setTimeout(monitorAck, 100);
+        setTimeout(monitorAck, 200);
+        setTimeout(monitorAck, 500);
+        setTimeout(monitorAck, 1000);
+        setTimeout(monitorAck, 2000);
+      } else {
+        console.warn('⚠️ No dialog found immediately after accept() - will check in Established state');
+      }
       
       // Ensure local stream is added to peer connection after accepting
       const setupLocalStreamAfterAccept = () => {
@@ -1682,30 +1944,36 @@ export class SIPService {
               console.log('📞 Session state before BYE:', session.state);
               
               const dialog = (session as any).dialog;
-              const dialogState = dialog?.state;
+              // Check dialog state using 'early' property (false = confirmed, true = early)
+              const dialogEarly = dialog?.early;
+              const dialogState = dialog?.state || (dialogEarly === false ? 'Confirmed' : dialogEarly === true ? 'Early' : 'Unknown');
               console.log('📞 Dialog state:', dialogState);
+              console.log('📞 Dialog early property:', dialogEarly);
               console.log('📞 Dialog exists:', !!dialog);
               
               // CRITICAL: For outbound calls, ensure dialog is in "Confirmed" state before sending BYE
               // "Confirmed" means ACK was sent and received, dialog is fully established
-              // If dialog is not confirmed, wait a bit for ACK to be sent
-              if (dialog && dialogState !== 'Confirmed' && dialogState !== 'Terminated') {
-                console.warn(`⚠️ Dialog is in "${dialogState}" state, not "Confirmed". Waiting for ACK to be sent...`);
+              // Check using 'early' property: early=false means confirmed
+              if (dialog && dialogEarly !== false && dialogEarly !== undefined) {
+                console.warn(`⚠️ Dialog is not confirmed (early=${dialogEarly}), waiting for ACK to be sent...`);
                 // Wait up to 2 seconds for dialog to become confirmed
                 let waitCount = 0;
-                let currentDialogState = dialogState;
-                while (currentDialogState !== 'Confirmed' && waitCount < 20 && session.state === 'Established') {
+                let currentDialogEarly = dialogEarly;
+                while (currentDialogEarly !== false && waitCount < 20 && session.state === 'Established') {
                   await new Promise(resolve => setTimeout(resolve, 100));
                   waitCount++;
-                  currentDialogState = (session as any).dialog?.state;
-                  if (currentDialogState === 'Confirmed') {
-                    console.log('✅ Dialog is now confirmed, proceeding with BYE');
+                  const currentDialog = (session as any).dialog;
+                  currentDialogEarly = currentDialog?.early;
+                  if (currentDialogEarly === false) {
+                    console.log('✅ Dialog is now confirmed (early=false), proceeding with BYE');
                     break;
                   }
                 }
-                if (currentDialogState !== 'Confirmed' && currentDialogState !== 'Terminated') {
-                  console.warn(`⚠️ Dialog still not confirmed after waiting (state: ${currentDialogState}), proceeding with BYE anyway`);
+                if (currentDialogEarly !== false && currentDialogEarly !== undefined) {
+                  console.warn(`⚠️ Dialog still not confirmed after waiting (early=${currentDialogEarly}), proceeding with BYE anyway`);
                 }
+              } else if (dialog && dialogEarly === false) {
+                console.log('✅ Dialog is confirmed (early=false), ready to send BYE');
               }
               
               // Verify dialog still exists and is valid before sending BYE
@@ -2240,30 +2508,123 @@ export class SIPService {
         case 'Established':
           console.log('✅ Phiên đã được thiết lập - call is active');
           
-          // CRITICAL: For outbound calls, verify that ACK was sent
-          if (isOutbound) {
-            const dialog = (session as any).dialog;
-            if (dialog) {
-              const dialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+          const dialog = (session as any).dialog;
+          if (dialog) {
+            // Extract dialog state properly - check multiple sources
+            // 1. Check dialog.early property (false = confirmed, true = early)
+            // 2. Check dialog.dialogState.state (if it's an enum/object)
+            // 3. Check dialog.state (direct property)
+            const dialogEarly = (dialog as any).early;
+            const dialogStateObj = dialog.dialogState;
+            let dialogState: string | undefined;
+            
+            // First, check the 'early' property - this is the most reliable indicator
+            if (dialogEarly === false) {
+              dialogState = 'Confirmed';
+            } else if (dialogEarly === true) {
+              dialogState = 'Early';
+            } else if (typeof dialogStateObj === 'string') {
+              dialogState = dialogStateObj;
+            } else if (dialogStateObj?.state) {
+              dialogState = String(dialogStateObj.state);
+            } else if (dialog.state) {
+              dialogState = String(dialog.state);
+            } else if (typeof dialogStateObj === 'object') {
+              // Try to extract state from object
+              dialogState = String(dialogStateObj);
+            }
+            
+            if (isOutbound) {
+              // CRITICAL: For outbound calls, verify that ACK was sent
+              const ackWait = (dialog as any).ackWait;
+              const ackProcessing = (dialog as any).ackProcessing;
+              
               console.log('📞 Outbound call Established - Dialog state:', dialogState);
+              console.log('📞 Outbound call - Dialog details:', {
+                callId: dialog.callId,
+                localTag: dialog.localTag,
+                remoteTag: dialog.remoteTag,
+                state: dialogState,
+                early: dialogEarly,
+                earlyType: typeof dialogEarly,
+                dialogStateType: typeof dialogState,
+                dialogStateObj: dialogStateObj,
+                dialogStateObjKeys: dialogStateObj ? Object.keys(dialogStateObj) : 'no object',
+                ackWait: !!ackWait,
+                ackProcessing: !!ackProcessing
+              });
+              
+              // Use 'early' property as primary indicator (false = confirmed)
+              const isConfirmed = dialogEarly === false || 
+                                 dialogState === 'Confirmed' || 
+                                 (dialogStateObj && String(dialogStateObj).includes('Confirmed'));
+              const isEarly = dialogEarly === true || 
+                             dialogState === 'Early' || 
+                             (dialogStateObj && String(dialogStateObj).includes('Early'));
+              
+              if (isConfirmed) {
+                console.log('✅✅✅ ACK SENT: Dialog is Confirmed - ACK was sent successfully!');
+                console.log('✅✅✅ Outbound call dialog is fully confirmed (early=false)');
+              } else if (isEarly) {
+                console.warn('⚠️ ACK PENDING: Dialog is still in Early state - ACK may not have been sent yet');
+                console.warn('⚠️ This could cause issues when sending BYE later');
+              } else {
+                console.warn(`⚠️ Dialog is in unexpected state: ${dialogState} - ACK status unknown`);
+                console.warn('⚠️ Dialog early property:', dialogEarly);
+                console.warn('⚠️ Dialog state object:', dialogStateObj);
+              }
+            } else {
+              // For inbound calls, check if ACK was received from remote
+              console.log('📞 Inbound call Established - Checking if ACK was received from remote...');
+              console.log('📞 Dialog state:', dialogState);
               console.log('📞 Dialog details:', {
                 callId: dialog.callId,
                 localTag: dialog.localTag,
                 remoteTag: dialog.remoteTag,
-                state: dialogState
+                state: dialogState,
+                dialogStateObj: dialog.dialogState
+              });
+              
+              // Check ACK status
+              const ackWait = (dialog as any).ackWait;
+              const ackProcessing = (dialog as any).ackProcessing;
+              console.log('📞 ACK status for inbound call:', {
+                ackWait: !!ackWait,
+                ackProcessing: !!ackProcessing,
+                hasAckWait: 'ackWait' in dialog,
+                hasAckProcessing: 'ackProcessing' in dialog,
+                dialogState: dialogState
               });
               
               if (dialogState === 'Confirmed' || dialog.dialogState?.state === 'Confirmed') {
-                console.log('✅ Dialog is Confirmed - ACK was sent successfully');
+                console.log('✅ ACK RECEIVED: Dialog is Confirmed - Remote side sent ACK successfully');
+                console.log('✅ Inbound call dialog is fully established');
               } else if (dialogState === 'Early' || dialog.dialogState?.state === 'Early') {
-                console.warn('⚠️ Dialog is still in Early state - ACK may not have been sent yet');
-                console.warn('⚠️ This could cause issues when sending BYE later');
+                console.warn('⚠️ ACK NOT RECEIVED YET: Dialog is still in Early state');
+                console.warn('⚠️ Remote side has not sent ACK after receiving 200 OK');
+                console.warn('⚠️ SIP.js will retransmit 200 OK until ACK is received or timeout');
+                
+                // Monitor dialog state changes to detect when ACK is received
+                const checkAckReceived = () => {
+                  const currentDialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+                  if (currentDialogState === 'Confirmed' || dialog.dialogState?.state === 'Confirmed') {
+                    console.log('✅ ACK RECEIVED: Dialog transitioned to Confirmed - Remote side sent ACK!');
+                  } else {
+                    console.log('⏳ Still waiting for ACK... Dialog state:', currentDialogState);
+                  }
+                };
+                
+                // Check periodically for ACK reception
+                setTimeout(checkAckReceived, 100);
+                setTimeout(checkAckReceived, 500);
+                setTimeout(checkAckReceived, 1000);
+                setTimeout(checkAckReceived, 2000);
               } else {
                 console.warn(`⚠️ Dialog is in unexpected state: ${dialogState} - ACK status unknown`);
               }
-            } else {
-              console.error('❌ No dialog found in Established state - ACK may not have been sent!');
             }
+          } else {
+            console.error('❌ No dialog found in Established state!');
           }
           
           this.onStateChange?.(CallStatus.ACTIVE);
