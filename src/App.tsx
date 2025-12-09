@@ -96,11 +96,33 @@ function App() {
           : 'max-w-md px-2 sm:px-4 py-2 sm:py-4'
       }`}>
         {isInCall ? (
-          <div className="flex flex-col h-screen md:h-auto md:min-h-[600px]">
-            <div className="flex-1 flex items-center justify-center p-0 md:p-6">
+          <div className="flex flex-col h-screen h-[100dvh] md:h-auto md:min-h-[600px]" style={{
+            height: '100vh',
+            height: '100dvh',
+            minHeight: '100vh',
+            minHeight: '100dvh',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+            position: 'relative'
+          }}>
+            <div className="flex-1 flex items-center justify-center p-0 md:p-6 min-h-0" style={{ 
+              flex: '1 1 auto', 
+              minHeight: 0,
+              overflow: 'hidden',
+              position: 'relative',
+              zIndex: 1
+            }}>
               <VideoCall />
             </div>
-            <div className="flex-shrink-0 p-0 md:mt-6">
+            <div className="flex-shrink-0 p-0 md:mt-6 relative z-50" style={{ 
+              flexShrink: 0,
+              position: 'relative',
+              zIndex: 9999,
+              width: '100%',
+              marginBottom: 0,
+              overflow: 'visible'
+            }}>
               <CallControls />
             </div>
           </div>

@@ -1126,6 +1126,8 @@ export class SIPService {
       inviter.delegate = {
         ...originalDelegate,
         // Handle call acceptance (200 OK received) - ACK should be sent automatically by SIP.js
+        // CRITICAL: This delegate is for notification only - SIP.js automatically sends ACK
+        // We must NOT block or interfere with the default ACK sending behavior
         onAccept: (response: any) => {
           console.log('📞 Inviter: Call accepted by remote side (200 OK received)');
           console.log('📞 Inviter onAccept delegate called - SIP.js should automatically send ACK');
@@ -1135,26 +1137,72 @@ export class SIPService {
             hasSDP: !!response?.body
           });
           
+          // CRITICAL: Call original handler FIRST to ensure default ACK behavior happens
+          // This ensures SIP.js's default ACK sending mechanism is not blocked
+          // If there's no original handler, SIP.js will still send ACK automatically
+          if (originalDelegate?.onAccept) {
+            try {
+              const result = originalDelegate.onAccept.call(originalDelegate, response);
+              // If original handler returns a promise, don't await it - let SIP.js continue
+              if (result instanceof Promise) {
+                result.catch((error) => {
+                  console.error('❌ Error in original onAccept handler:', error);
+                });
+              }
+            } catch (error) {
+              console.error('❌ Error in original onAccept handler:', error);
+            }
+          } else {
+            // No original handler - SIP.js will still send ACK automatically
+            console.log('📞 No original onAccept handler - SIP.js will send ACK automatically');
+          }
+          
           // Verify dialog state - ACK should be sent automatically when dialog is created
           // Check dialog immediately and also after a short delay to catch async creation
           const checkDialog = () => {
             const dialog = (inviter as any).dialog;
             if (dialog) {
-              console.log('📞 Dialog state after 200 OK:', dialog.state);
+              // Use dialogState instead of state (dialog.state may be undefined)
+              const dialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+              const dialogStateObj = dialog.dialogState;
+              
+              console.log('📞 Dialog state after 200 OK:', dialogState);
               console.log('📞 Dialog details:', {
                 callId: dialog.callId,
                 localTag: dialog.localTag,
                 remoteTag: dialog.remoteTag,
                 state: dialog.state,
-                dialogState: dialog.dialogState
+                dialogState: dialogState,
+                dialogStateObj: dialogStateObj,
+                hasState: 'state' in dialog,
+                hasDialogState: 'dialogState' in dialog
+              });
+              
+              // Check if ACK wait timer exists (SIP.js uses this to track ACK sending)
+              const ackWait = (dialog as any).ackWait;
+              const ackProcessing = (dialog as any).ackProcessing;
+              console.log('📞 ACK status:', {
+                ackWait: !!ackWait,
+                ackProcessing: !!ackProcessing,
+                hasAckWait: 'ackWait' in dialog,
+                hasAckProcessing: 'ackProcessing' in dialog
               });
               
               // Verify ACK will be sent - SIP.js should handle this automatically
-              // But we can check if the dialog is in the right state
-              if (dialog.state === 'Early' || dialog.state === 'Confirmed') {
+              // Check both dialog.state and dialog.dialogState.state
+              const isEarly = dialogState === 'Early' || dialogStateObj?.state === 'Early';
+              const isConfirmed = dialogState === 'Confirmed' || dialogStateObj?.state === 'Confirmed';
+              
+              if (isEarly || isConfirmed) {
                 console.log('✅ Dialog is in valid state for ACK - SIP.js should send ACK automatically');
+                if (isConfirmed) {
+                  console.log('✅ Dialog is already Confirmed - ACK was sent successfully');
+                } else {
+                  console.log('📞 Dialog is in Early state - ACK should be sent soon');
+                }
               } else {
-                console.warn(`⚠️ Dialog is in unexpected state: ${dialog.state} - ACK may not be sent!`);
+                console.warn(`⚠️ Dialog is in unexpected state: ${dialogState} - ACK may not be sent!`);
+                console.warn('⚠️ Dialog state object:', dialogStateObj);
               }
             } else {
               console.warn('⚠️ No dialog found after 200 OK - ACK may not be sent!');
@@ -1168,11 +1216,8 @@ export class SIPService {
           // Also check after a short delay in case dialog is created asynchronously
           setTimeout(checkDialog, 50);
           setTimeout(checkDialog, 100);
-          
-          // Call original handler if it exists
-          if (originalDelegate?.onAccept) {
-            return originalDelegate.onAccept.call(originalDelegate, response);
-          }
+          setTimeout(checkDialog, 200);
+          setTimeout(checkDialog, 500);
         },
         // Handle call rejection (e.g., 404 Not Found, remote not registered)
         onReject: (response: any) => {
@@ -2194,6 +2239,33 @@ export class SIPService {
           break;
         case 'Established':
           console.log('✅ Phiên đã được thiết lập - call is active');
+          
+          // CRITICAL: For outbound calls, verify that ACK was sent
+          if (isOutbound) {
+            const dialog = (session as any).dialog;
+            if (dialog) {
+              const dialogState = dialog.dialogState?.state || dialog.state || dialog.dialogState;
+              console.log('📞 Outbound call Established - Dialog state:', dialogState);
+              console.log('📞 Dialog details:', {
+                callId: dialog.callId,
+                localTag: dialog.localTag,
+                remoteTag: dialog.remoteTag,
+                state: dialogState
+              });
+              
+              if (dialogState === 'Confirmed' || dialog.dialogState?.state === 'Confirmed') {
+                console.log('✅ Dialog is Confirmed - ACK was sent successfully');
+              } else if (dialogState === 'Early' || dialog.dialogState?.state === 'Early') {
+                console.warn('⚠️ Dialog is still in Early state - ACK may not have been sent yet');
+                console.warn('⚠️ This could cause issues when sending BYE later');
+              } else {
+                console.warn(`⚠️ Dialog is in unexpected state: ${dialogState} - ACK status unknown`);
+              }
+            } else {
+              console.error('❌ No dialog found in Established state - ACK may not have been sent!');
+            }
+          }
+          
           this.onStateChange?.(CallStatus.ACTIVE);
           this.setupPeerConnectionListeners(session);
           

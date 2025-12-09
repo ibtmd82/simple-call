@@ -9,7 +9,17 @@
   }
   
   .safe-area-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+    /* Extra padding for iPhone Safari to ensure buttons are fully visible */
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1.5rem);
+  }
+  
+  /* iPhone Safari specific: Ensure CallControls is always fully visible */
+  @supports (-webkit-touch-callout: none) {
+    .safe-area-bottom {
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2rem) !important;
+    }
   }
   
   .safe-area-top {
@@ -70,6 +80,29 @@
     -webkit-overflow-scrolling: touch;
   }
   
+  /* iPhone Safari specific fixes */
+  @supports (-webkit-touch-callout: none) {
+    /* This targets iOS Safari specifically */
+    html, body {
+      height: 100%;
+      height: -webkit-fill-available;
+    }
+    
+    /* Ensure full height containers work on iOS */
+    .h-screen {
+      height: 100vh;
+      height: -webkit-fill-available;
+      height: 100dvh;
+    }
+    
+    /* Prevent iOS Safari from hiding controls */
+    .call-screen-fullscreen {
+      height: 100vh !important;
+      height: -webkit-fill-available !important;
+      height: 100dvh !important;
+    }
+  }
+  
   /* Prevent text selection on buttons and interactive elements */
   button, a, [role="button"] {
     -webkit-tap-highlight-color: transparent;
@@ -108,6 +141,21 @@
   /* Optimize button sizes for mobile */
   button {
     min-height: 44px;
+    min-width: 44px;
+    /* Ensure buttons are tappable on iOS */
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    cursor: pointer;
+  }
+  
+  /* Ensure answer/reject buttons are always tappable on iPhone Safari */
+  button[aria-label*="Answer"],
+  button[aria-label*="Reject"] {
+    position: relative !important;
+    z-index: 1000 !important;
+    pointer-events: auto !important;
+    touch-action: manipulation !important;
+    -webkit-tap-highlight-color: rgba(0, 180, 75, 0.3) !important;
   }
 }
 
@@ -231,16 +279,66 @@
     width: 100vw !important;
     height: 100vh !important;
     height: 100dvh !important; /* Dynamic viewport height for mobile */
+    min-height: 100vh !important;
+    min-height: 100dvh !important;
     z-index: 9998 !important;
     margin: 0 !important;
     padding: 0 !important;
     overflow: hidden !important;
     background: #000 !important;
+    /* Prevent Safari from hiding controls */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: none;
   }
   
   .call-screen-fullscreen > div {
     height: 100% !important;
     width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+  
+  /* Ensure CallControls is always visible and tappable on iPhone Safari */
+  .call-screen-fullscreen .flex-shrink-0 {
+    position: relative !important;
+    z-index: 9999 !important;
+    background: rgba(255, 255, 255, 0.95) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    /* Ensure it's above everything */
+    transform: translateZ(0) !important;
+    -webkit-transform: translateZ(0) !important;
+    /* Prevent content from being cut off */
+    overflow: visible !important;
+    min-height: auto !important;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1.5rem) !important;
+  }
+  
+  /* Ensure buttons container is fully visible */
+  .call-screen-fullscreen .flex-shrink-0 > div {
+    overflow: visible !important;
+    padding-bottom: 0 !important;
+  }
+  
+  /* Ensure CallControls buttons are fully visible on mobile */
+  @media screen and (max-width: 767px) {
+    .call-screen-fullscreen .flex-shrink-0 {
+      padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 2rem) !important;
+    }
+    
+    /* Ensure button container has enough space */
+    .call-screen-fullscreen .flex-shrink-0 .bg-white {
+      padding-top: 1rem !important;
+      padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px)) !important;
+      min-height: auto !important;
+    }
+    
+    /* Ensure buttons themselves are fully visible */
+    .call-screen-fullscreen button {
+      margin: 0.25rem !important;
+      min-height: 56px !important;
+      min-width: 56px !important;
+    }
   }
   
   /* Ensure video fills screen on mobile */
@@ -248,6 +346,19 @@
     width: 100% !important;
     height: 100% !important;
     object-fit: cover !important;
+  }
+  
+  /* Ensure video container doesn't overlap controls */
+  .call-screen-fullscreen .flex-1 {
+    overflow: hidden !important;
+    position: relative !important;
+    z-index: 1 !important;
+  }
+  
+  /* Ensure controls are always on top */
+  .call-screen-fullscreen .flex-shrink-0 {
+    position: relative !important;
+    z-index: 10 !important;
   }
   
   /* Remove rounded corners on mobile for fullscreen */

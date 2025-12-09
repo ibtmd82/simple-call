@@ -80,7 +80,15 @@ export const CallControls: React.FC = () => {
 
   return (
     <>
-      <div className="bg-white/90 backdrop-blur-lg border-t border-secondary-200/50 shadow-strong p-4 xs:p-5 sm:p-6 md:p-8 safe-area-bottom relative z-10 md:rounded-t-2xl">
+      <div className="bg-white/90 backdrop-blur-lg border-t border-secondary-200/50 shadow-strong p-4 xs:p-5 sm:p-6 md:p-8 safe-area-bottom relative z-50 md:rounded-t-2xl" style={{ 
+        position: 'relative',
+        WebkitTapHighlightColor: 'transparent',
+        touchAction: 'manipulation',
+        paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))',
+        marginBottom: 0,
+        minHeight: 'auto',
+        overflow: 'visible'
+      }}>
         <div className="max-w-xl md:max-w-2xl lg:max-w-4xl mx-auto">
           {/* Mobile Layout: Stack vertically */}
           <div className="flex flex-col gap-3 xs:gap-4 sm:hidden md:hidden">
@@ -98,7 +106,15 @@ export const CallControls: React.FC = () => {
             </div>
 
             {/* Call Controls */}
-            <div className="flex items-center justify-center gap-2 xs:gap-3">
+            <div className="flex items-center justify-center gap-2 xs:gap-3" style={{
+              position: 'relative',
+              zIndex: 100,
+              pointerEvents: 'auto',
+              touchAction: 'manipulation',
+              paddingTop: '0.5rem',
+              paddingBottom: '0.5rem',
+              minHeight: 'auto'
+            }}>
               {(status === 'ringing' || status === 'incoming') ? (
                 <>
                   <CallButton
@@ -117,7 +133,12 @@ export const CallControls: React.FC = () => {
                     size="large"
                     aria-label="Answer call"
                     title="Answer call"
-                    style={{ zIndex: 10 }}
+                    style={{ 
+                      zIndex: 100,
+                      position: 'relative',
+                      WebkitTapHighlightColor: 'transparent',
+                      touchAction: 'manipulation'
+                    }}
                   />
                 </>
               ) : (
