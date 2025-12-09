@@ -8,19 +8,17 @@ export class SIPService {
   private localStream: MediaStream | null = null;
   private remoteStream: MediaStream | null = null;
   private isExplicitlyDisconnecting = false;
-  private isReregistering = false;
-  private isAutoRegistering = false;
   private lastSipConfig: SipConfig | null = null;
   private isCleaningUp = false;
   private isHangingUp = false;
   private onStateChange?: (state: CallStatus) => void;
   private onRemoteStreamChange?: (stream: MediaStream | null) => void;
   private onLocalStreamChange?: (stream: MediaStream | null) => void;
-  private onUnregisteredCallback?: (reason: string, details?: any) => void;
   private lastRegistrationTime: number | null = null;
   private registrationExpiryTime: number | null = null;
   private registrationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  private registrationCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private registrationExpiryCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastHangupTime: number = 0; // Track when last call was hung up
 
   constructor() {
     this.setupEventListeners();
@@ -124,25 +122,179 @@ export class SIPService {
 
       this.ua.delegate = {
         onInvite: (session: Session) => {
-          console.log('Phiên RTC mới:', session);
+          console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+          console.log('📞 Session details:', {
+            id: (session as any).id,
+            state: session.state,
+            remoteIdentity: session.remoteIdentity?.uri?.user,
+            direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+          });
+          console.log('📞 UserAgent state:', {
+            isConnected: this.ua?.isConnected(),
+            state: (this.ua as any)?.state
+          });
+          console.log('📞 Registerer state:', this.registerer?.state);
           this.handleIncomingCall(session);
         },
         onConnect: () => {
-          console.log('Đã kết nối đến máy chủ SIP');
+          console.log('✅ Đã kết nối đến máy chủ SIP');
           // Ensure UA is still set (it should be, but verify)
           if (!this.ua) {
             console.error('⚠️ UA is null in onConnect - this should not happen');
             return;
           }
-          this.onStateChange?.(CallStatus.CONNECTED);
-          // Ensure we're registered after reconnection
-          if (!this.isExplicitlyDisconnecting && !this.isInCall()) {
+          
+          // CRITICAL: Verify UserAgent delegate is still set after reconnection
+          const delegateSet = !!this.ua.delegate?.onInvite;
+          const isConnected = this.ua.isConnected();
+          const inCall = this.isInCall();
+          const sessionState = this.currentSession?.state;
+          console.log('✅ After reconnection - verifying delegate and registration:', {
+            delegateSet,
+            isConnected,
+            hasOnInvite: !!this.ua.delegate?.onInvite,
+            registererState: this.registerer?.state,
+            inCall,
+            sessionState
+          });
+          
+          // If we're in a call that's stuck in Establishing or Terminating state after reconnection,
+          // the dialog might be broken - check if we need to handle this
+          if (inCall && (sessionState === 'Establishing' || sessionState === 'Terminating')) {
+            console.log(`⚠️ Call is in ${sessionState} state after reconnection - monitoring for completion`);
+            // Set a timeout to detect if the call is stuck
             setTimeout(() => {
-              this.autoRegisterIfNeeded().catch(err => {
-                console.error('Auto-register on reconnect failed:', err);
-              });
-            }, 1000);
+              if (this.currentSession && (this.currentSession.state === 'Establishing' || this.currentSession.state === 'Terminating')) {
+                const sessionState = this.currentSession.state;
+                console.error(`❌ Call stuck in ${sessionState} state after reconnection - dialog may be broken`);
+                console.error('❌ Cancelling stuck call to allow new calls');
+                
+                // Cancel the stuck call (only if still in Establishing state)
+                const stuckSession = this.currentSession;
+                if (sessionState === 'Establishing') {
+                  try {
+                    if (stuckSession instanceof Inviter) {
+                      stuckSession.cancel();
+                      console.log('✅ Cancelled stuck outbound call');
+                    } else if (stuckSession instanceof Invitation) {
+                      stuckSession.reject();
+                      console.log('✅ Rejected stuck inbound call');
+                    }
+                  } catch (error) {
+                    console.error('❌ Error cancelling stuck call:', error);
+                  }
+                }
+                
+                // Clean up and clear session
+                if (this.localStream) {
+                  this.localStream.getTracks().forEach(track => track.stop());
+                  this.localStream = null;
+                  this.onLocalStreamChange?.(null);
+                }
+                
+                // Clear session reference to allow new calls
+                this.currentSession = null;
+                this.isHangingUp = false;
+                
+                // CRITICAL: Verify and re-set delegate after cancelling stuck call
+                // This ensures the system is ready to receive new calls
+                if (this.ua && this.ua.isConnected()) {
+                  if (!this.ua.delegate?.onInvite) {
+                    console.warn('⚠️ Delegate missing after cancelling stuck call - re-setting...');
+                    const existingDelegate = this.ua.delegate;
+                    this.ua.delegate = {
+                      onInvite: (session: Session) => {
+                        console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+                        console.log('📞 Session details:', {
+                          id: (session as any).id,
+                          state: session.state,
+                          remoteIdentity: session.remoteIdentity?.uri?.user,
+                          direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+                        });
+                        this.handleIncomingCall(session);
+                      },
+                      onConnect: existingDelegate?.onConnect,
+                      onDisconnect: existingDelegate?.onDisconnect
+                    };
+                    console.log('✅ UserAgent delegate re-set after cancelling stuck call');
+                  } else {
+                    console.log('✅ UserAgent delegate verified after cancelling stuck call - ready to receive calls');
+                  }
+                }
+                
+                // Verify registration is still active
+                if (this.registerer && this.ua && this.ua.isConnected()) {
+                  const registererState = (this.registerer.state as any).toString ? (this.registerer.state as any).toString() : String(this.registerer.state);
+                  if (registererState === 'Registered' || registererState.includes('Registered')) {
+                    this.onStateChange?.(CallStatus.REGISTERED);
+                    console.log('✅ Still registered after cancelling stuck call - ready to receive calls');
+                  } else {
+                    console.warn('⚠️ Not registered after cancelling stuck call - attempting to re-register...');
+                    this.registerer.register().then(() => {
+                      console.log('✅ Re-registered successfully after cancelling stuck call');
+                      this.onStateChange?.(CallStatus.REGISTERED);
+                    }).catch(error => {
+                      console.error('❌ Re-registration failed after cancelling stuck call:', error);
+                    });
+                  }
+                } else {
+                  // Update state to IDLE if not registered
+                  this.onStateChange?.(CallStatus.IDLE);
+                }
+                
+                console.log('✅ Stuck call cleared - ready for new calls');
+              }
+            }, 3000); // Check after 3 seconds for faster recovery from stuck calls
           }
+          
+          // Re-set delegate if it's missing (shouldn't happen, but safety check)
+          if (!delegateSet && this.ua) {
+            console.warn('⚠️ Delegate missing after reconnection - re-setting...');
+            const existingDelegate = this.ua.delegate;
+            this.ua.delegate = {
+              onInvite: (session: Session) => {
+                console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+                console.log('📞 Session details:', {
+                  id: (session as any).id,
+                  state: session.state,
+                  remoteIdentity: session.remoteIdentity?.uri?.user,
+                  direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+                });
+                this.handleIncomingCall(session);
+              },
+              onConnect: existingDelegate?.onConnect,
+              onDisconnect: existingDelegate?.onDisconnect
+            };
+            console.log('✅ UserAgent delegate re-set after reconnection');
+          }
+          
+          // CRITICAL: Re-register after reconnection to ensure we can receive calls
+          // Registration may be lost when WebSocket closes, so we need to re-register
+          // BUT: Only re-register if this is a reconnection (not initial connection)
+          // If registerer state is 'Initial', that means we haven't registered yet,
+          // so connect() will handle the initial registration
+          if (this.registerer && !inCall) {
+            const registererState = String(this.registerer.state);
+            const isInitial = registererState === 'Initial' || registererState.includes('Initial');
+            const isRegistered = registererState === 'Registered' || registererState.includes('Registered');
+            
+            // Only re-register if we were previously registered but now we're not
+            // If state is 'Initial', this is the first connection, so let connect() handle it
+            if (!isInitial && !isRegistered) {
+              console.log('⚠️ Not registered after reconnection - re-registering to receive calls...');
+              this.registerer.register().then(() => {
+                console.log('✅ Re-registered successfully after reconnection');
+              }).catch((error) => {
+                console.error('❌ Failed to re-register after reconnection:', error);
+              });
+            } else if (isRegistered) {
+              console.log('✅ Still registered after reconnection - ready to receive calls');
+            } else if (isInitial) {
+              console.log('ℹ️ Registerer in Initial state - connect() will handle initial registration');
+            }
+          }
+          
+          this.onStateChange?.(CallStatus.CONNECTED);
         },
         onDisconnect: () => {
           console.log('Đã ngắt kết nối khỏi máy chủ SIP');
@@ -193,11 +345,14 @@ export class SIPService {
           } else if (this.currentSession && this.currentSession.state === 'Establishing') {
             // Call is still being set up - don't clean up, let SIP.js handle reconnection
             console.log('⚠️ Connection lost during call setup - waiting for reconnection, not cleaning up');
+            // Don't change status - keep it in RINGING/CALLING state
+            // The call might still complete after reconnection
+            return; // Exit early, don't change status to UNREGISTERED
           }
           
           // Don't clear UA during automatic reconnection - SIP.js will handle reconnection
-          // Only update status if we're not explicitly disconnecting
-          if (!this.isExplicitlyDisconnecting) {
+          // Only update status if we're not explicitly disconnecting and not in a call
+          if (!this.isExplicitlyDisconnecting && !this.currentSession) {
             // UA should still exist during reconnection, just update status
             this.onStateChange?.(CallStatus.UNREGISTERED);
             // SIP.js will automatically reconnect, so we don't need to do anything here
@@ -222,8 +377,6 @@ export class SIPService {
         console.log(`📋 Registerer state changed: ${state}`);
         switch (state) {
           case 'Registered':
-            this.isReregistering = false;
-            this.isAutoRegistering = false;
             this.lastRegistrationTime = Date.now();
             // Try to get registration expiry from the registerer
             if (this.registerer) {
@@ -239,12 +392,42 @@ export class SIPService {
                 this.scheduleRegistrationRefresh(60);
               }
             }
-            // Start periodic registration check
-            this.startPeriodicRegistrationCheck();
+            
+            // CRITICAL: Verify delegate is set after registration to ensure incoming calls work
+            if (this.ua && (!this.ua.delegate?.onInvite)) {
+              console.warn('⚠️ Delegate missing after registration state change - re-setting...');
+              const existingDelegate = this.ua.delegate;
+              this.ua.delegate = {
+                onInvite: (session: Session) => {
+                  console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+                  console.log('📞 Session details:', {
+                    id: (session as any).id,
+                    state: session.state,
+                    remoteIdentity: session.remoteIdentity?.uri?.user,
+                    direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+                  });
+                  console.log('📞 UserAgent state:', {
+                    isConnected: this.ua?.isConnected(),
+                    state: (this.ua as any)?.state
+                  });
+                  console.log('📞 Registerer state:', this.registerer?.state);
+                  this.handleIncomingCall(session);
+                },
+                onConnect: existingDelegate?.onConnect,
+                onDisconnect: existingDelegate?.onDisconnect
+              };
+              console.log('✅ UserAgent delegate re-set after registration state change');
+            } else if (this.ua && this.ua.delegate?.onInvite) {
+              console.log('✅ UserAgent delegate verified after registration - ready to receive calls');
+            }
+            
             this.onStateChange?.(CallStatus.REGISTERED);
             break;
           case 'Unregistered':
-            this.handleUnregistered();
+            console.log('⚠️ Registerer unregistered - attempting auto re-registration...');
+            this.onStateChange?.(CallStatus.UNREGISTERED);
+            // Auto re-register when expiration is detected
+            this.autoReRegister();
             break;
           case 'Terminated':
             console.log('⚠️ Registerer terminated');
@@ -298,6 +481,36 @@ export class SIPService {
       console.log('Bắt đầu đăng ký Registerer...');
       await this.registerer.register();
       console.log('Đã đăng ký thành công');
+      
+      // CRITICAL: Verify and re-set delegate after registration to ensure incoming calls work
+      // Sometimes the delegate can be lost or not properly set, so we verify it here
+      if (this.ua && (!this.ua.delegate?.onInvite)) {
+        console.warn('⚠️ Delegate missing after registration - re-setting...');
+        const existingDelegate = this.ua.delegate;
+        this.ua.delegate = {
+          onInvite: (session: Session) => {
+            console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+            console.log('📞 Session details:', {
+              id: (session as any).id,
+              state: session.state,
+              remoteIdentity: session.remoteIdentity?.uri?.user,
+              direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+            });
+            console.log('📞 UserAgent state:', {
+              isConnected: this.ua?.isConnected(),
+              state: (this.ua as any)?.state
+            });
+            console.log('📞 Registerer state:', this.registerer?.state);
+            this.handleIncomingCall(session);
+          },
+          onConnect: existingDelegate?.onConnect,
+          onDisconnect: existingDelegate?.onDisconnect
+        };
+        console.log('✅ UserAgent delegate re-set after registration');
+      } else if (this.ua && this.ua.delegate?.onInvite) {
+        console.log('✅ UserAgent delegate verified after registration - ready to receive calls');
+      }
+      
       this.isExplicitlyDisconnecting = false;
       // lastSipConfig is already set at the beginning of connect()
 
@@ -333,8 +546,15 @@ export class SIPService {
     console.log('Ngắt kết nối khỏi máy chủ SIP...');
     this.isExplicitlyDisconnecting = true;
 
-    // Stop periodic registration checks
-    this.stopPeriodicRegistrationCheck();
+    // Stop registration refresh and expiry check timers
+    if (this.registrationRefreshTimer) {
+      clearTimeout(this.registrationRefreshTimer);
+      this.registrationRefreshTimer = null;
+    }
+    if (this.registrationExpiryCheckTimer) {
+      clearInterval(this.registrationExpiryCheckTimer);
+      this.registrationExpiryCheckTimer = null;
+    }
 
     if (this.currentSession) {
       await this.currentSession.terminate();
@@ -418,13 +638,83 @@ export class SIPService {
       }
     }
     
+    // CRITICAL: Wait a bit after hangup to ensure previous call's dialog is fully cleaned up
+    // This prevents WebSocket closures and dialog conflicts when making a new call immediately after hangup
+    const timeSinceLastHangup = Date.now() - this.lastHangupTime;
+    if (timeSinceLastHangup < 3000) {
+      const waitTime = 3000 - timeSinceLastHangup;
+      console.log(`⏳ Waiting ${waitTime}ms after last hangup to ensure dialog cleanup...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
     // CRITICAL: Check if there's an active session that's not terminated
+    // But allow clearing stuck "Establishing" or "Terminating" sessions (e.g., after WebSocket reconnection)
     if (this.currentSession && this.currentSession.state !== 'Terminated') {
-      console.warn('⚠️ Cannot make call: there is an active session', {
-        sessionState: this.currentSession.state,
-        sessionType: this.currentSession instanceof Inviter ? 'Inviter' : 'Invitation'
-      });
-      throw new Error('Cannot make call: there is already an active call');
+      // If session is stuck in "Establishing" or "Terminating" state, it might be broken after reconnection
+      // Clear it to allow new calls
+      if (this.currentSession.state === 'Establishing' || this.currentSession.state === 'Terminating') {
+        console.warn(`⚠️ Found stuck session in ${this.currentSession.state} state - clearing it to allow new call`, {
+          sessionState: this.currentSession.state,
+          sessionType: this.currentSession instanceof Inviter ? 'Inviter' : 'Invitation'
+        });
+        
+        // Try to cancel/reject the stuck session (only if not already terminating)
+        const stuckSession = this.currentSession;
+        if (stuckSession.state === 'Establishing') {
+          try {
+            if (stuckSession instanceof Inviter) {
+              stuckSession.cancel();
+              console.log('✅ Cancelled stuck outbound call');
+            } else if (stuckSession instanceof Invitation) {
+              stuckSession.reject();
+              console.log('✅ Rejected stuck inbound call');
+            }
+          } catch (error) {
+            console.error('❌ Error cancelling stuck call:', error);
+          }
+        }
+        
+        // Clean up local stream if exists
+        if (this.localStream) {
+          this.localStream.getTracks().forEach(track => track.stop());
+          this.localStream = null;
+          this.onLocalStreamChange?.(null);
+        }
+        
+        // Clear the stuck session
+        this.currentSession = null;
+        this.isHangingUp = false;
+        
+        // CRITICAL: Verify delegate after clearing stuck session
+        if (this.ua && this.ua.isConnected() && !this.ua.delegate?.onInvite) {
+          console.warn('⚠️ Delegate missing after clearing stuck session - re-setting...');
+          const existingDelegate = this.ua.delegate;
+          this.ua.delegate = {
+            onInvite: (session: Session) => {
+              console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+              console.log('📞 Session details:', {
+                id: (session as any).id,
+                state: session.state,
+                remoteIdentity: session.remoteIdentity?.uri?.user,
+                direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+              });
+              this.handleIncomingCall(session);
+            },
+            onConnect: existingDelegate?.onConnect,
+            onDisconnect: existingDelegate?.onDisconnect
+          };
+          console.log('✅ UserAgent delegate re-set after clearing stuck session');
+        }
+        
+        console.log('✅ Cleared stuck session - proceeding with new call');
+      } else {
+        // For other active states, throw error
+        console.warn('⚠️ Cannot make call: there is an active session', {
+          sessionState: this.currentSession.state,
+          sessionType: this.currentSession instanceof Inviter ? 'Inviter' : 'Invitation'
+        });
+        throw new Error('Cannot make call: there is already an active call');
+      }
     }
     
     // Clear any terminated session reference before starting new call
@@ -835,6 +1125,55 @@ export class SIPService {
       const originalDelegate = inviter.delegate;
       inviter.delegate = {
         ...originalDelegate,
+        // Handle call acceptance (200 OK received) - ACK should be sent automatically by SIP.js
+        onAccept: (response: any) => {
+          console.log('📞 Inviter: Call accepted by remote side (200 OK received)');
+          console.log('📞 Inviter onAccept delegate called - SIP.js should automatically send ACK');
+          console.log('📞 Response details:', {
+            statusCode: response?.statusCode,
+            reasonPhrase: response?.reasonPhrase,
+            hasSDP: !!response?.body
+          });
+          
+          // Verify dialog state - ACK should be sent automatically when dialog is created
+          // Check dialog immediately and also after a short delay to catch async creation
+          const checkDialog = () => {
+            const dialog = (inviter as any).dialog;
+            if (dialog) {
+              console.log('📞 Dialog state after 200 OK:', dialog.state);
+              console.log('📞 Dialog details:', {
+                callId: dialog.callId,
+                localTag: dialog.localTag,
+                remoteTag: dialog.remoteTag,
+                state: dialog.state,
+                dialogState: dialog.dialogState
+              });
+              
+              // Verify ACK will be sent - SIP.js should handle this automatically
+              // But we can check if the dialog is in the right state
+              if (dialog.state === 'Early' || dialog.state === 'Confirmed') {
+                console.log('✅ Dialog is in valid state for ACK - SIP.js should send ACK automatically');
+              } else {
+                console.warn(`⚠️ Dialog is in unexpected state: ${dialog.state} - ACK may not be sent!`);
+              }
+            } else {
+              console.warn('⚠️ No dialog found after 200 OK - ACK may not be sent!');
+              console.warn('⚠️ This could indicate a problem with dialog creation');
+            }
+          };
+          
+          // Check immediately
+          checkDialog();
+          
+          // Also check after a short delay in case dialog is created asynchronously
+          setTimeout(checkDialog, 50);
+          setTimeout(checkDialog, 100);
+          
+          // Call original handler if it exists
+          if (originalDelegate?.onAccept) {
+            return originalDelegate.onAccept.call(originalDelegate, response);
+          }
+        },
         // Handle call rejection (e.g., 404 Not Found, remote not registered)
         onReject: (response: any) => {
           console.log('📞 Inviter: Call rejected by remote side:', response?.statusCode, response?.reasonPhrase);
@@ -913,6 +1252,32 @@ export class SIPService {
         uaConnected: this.ua.isConnected(),
       });
       
+      // CRITICAL: Ensure WebSocket is connected and stable before sending INVITE
+      // This prevents WebSocket closures during call setup
+      if (!this.ua.isConnected()) {
+        console.warn('⚠️ WebSocket not connected, waiting for connection...');
+        // Wait up to 2 seconds for connection
+        let waitCount = 0;
+        while (!this.ua.isConnected() && waitCount < 20) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          waitCount++;
+        }
+        if (!this.ua.isConnected()) {
+          throw new Error('WebSocket is not connected. Cannot make call.');
+        }
+        console.log('✅ WebSocket connected, verifying stability...');
+      }
+      
+      // CRITICAL: Verify connection stability before sending INVITE
+      // Check connection multiple times to ensure it's stable
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        if (!this.ua.isConnected()) {
+          throw new Error('WebSocket connection is unstable. Cannot make call.');
+        }
+      }
+      console.log('✅ WebSocket connection verified as stable, proceeding with INVITE');
+      
       try {
         await inviter.invite();
         console.log('✅ INVITE sent successfully, waiting for response...');
@@ -951,9 +1316,56 @@ export class SIPService {
   }
 
   private handleIncomingCall(session: Session): void {
-    console.log('Cuộc gọi đến từ:', session.remoteIdentity.uri.user);
-    console.log('Setting up incoming call session:', session);
+    console.log('📞 Incoming call received from:', session.remoteIdentity.uri.user);
+    console.log('📞 Setting up incoming call session:', session);
+    console.log('📞 Session ID:', (session as any).id);
+    console.log('📞 Current session before setting:', this.currentSession ? {
+      id: (this.currentSession as any).id,
+      state: this.currentSession.state,
+      isSame: this.currentSession === session
+    } : 'null');
+    
+    // CRITICAL: Clear any previous session reference if it exists and is terminated
+    // This ensures we can receive new calls even if previous session wasn't fully cleaned up
+    if (this.currentSession) {
+      const previousSessionState = this.currentSession.state;
+      const previousSessionId = (this.currentSession as any).id;
+      const newSessionId = (session as any).id;
+      console.log(`⚠️ Previous session exists with state: ${previousSessionState}, ID: ${previousSessionId}`);
+      console.log(`📞 New session ID: ${newSessionId}`);
+      
+      // CRITICAL: Only clear if it's actually the same session or if previous is terminated
+      if (this.currentSession === session) {
+        console.log('✅ Same session - keeping currentSession');
+      } else if (previousSessionState === 'Terminated' || previousSessionState === 'Terminating') {
+        console.log('🧹 Clearing terminated previous session to allow new incoming call');
+        this.currentSession = null;
+      } else if (previousSessionState !== 'Initial' && previousSessionState !== 'Establishing') {
+        // If there's an active call, reject the new incoming call
+        console.warn('⚠️ Active call in progress, rejecting new incoming call');
+        try {
+          if (session instanceof Invitation) {
+            session.reject().catch((error: any) => {
+              console.error('Error rejecting duplicate incoming call:', error);
+            });
+          } else {
+            console.warn('⚠️ Cannot reject - session is not an Invitation');
+          }
+        } catch (error) {
+          console.error('Error rejecting duplicate incoming call:', error);
+        }
+        return;
+      }
+    }
+    
+    // Set the new session as current - CRITICAL: Always set, even if previous session exists
+    // This ensures currentSession is always the latest incoming call
     this.currentSession = session;
+    console.log('✅ currentSession set to new incoming call:', {
+      id: (session as any).id,
+      state: session.state,
+      isInvitation: session instanceof Invitation
+    });
     this.setupSessionEventListeners(session);
     
     // Try to set up peer connection listeners early for incoming calls
@@ -976,6 +1388,16 @@ export class SIPService {
   }
 
   async answerCall(video: boolean = true): Promise<void> {
+    console.log('📞 answerCall called - checking currentSession...');
+    console.log('📞 currentSession:', this.currentSession ? {
+      id: (this.currentSession as any).id,
+      state: this.currentSession.state,
+      isInvitation: this.currentSession instanceof Invitation,
+      constructor: this.currentSession.constructor.name
+    } : 'null');
+    console.log('📞 UserAgent available:', !!this.ua);
+    console.log('📞 UserAgent connected:', this.ua?.isConnected());
+    
     // Try to find the session if currentSession is null
     let sessionToAnswer = this.currentSession;
     
@@ -985,6 +1407,7 @@ export class SIPService {
       // SIP.js stores sessions internally, but we need to check if there's a way to access them
       // For now, we'll rely on currentSession being set properly
       console.error('❌ Cannot find session to answer - currentSession was not set or was cleared');
+      console.error('❌ This usually means handleIncomingCall was not called or currentSession was cleared');
       throw new Error('Không có cuộc gọi đến để trả lời - phiên đã bị xóa hoặc không tồn tại');
     }
 
@@ -1150,12 +1573,6 @@ export class SIPService {
         this.cleanup();
         this.currentSession = null;
         this.onStateChange?.(CallStatus.IDLE);
-        // Auto-register when call is rejected
-        setTimeout(() => {
-          this.autoRegisterIfNeeded().catch(error => {
-            console.error('Auto-registration error after reject:', error);
-          });
-        }, 500);
       }
     }
   }
@@ -1166,113 +1583,6 @@ export class SIPService {
            this.currentSession.state !== 'Terminated';
   }
 
-  private async autoRegisterIfNeeded(): Promise<void> {
-    // Debug log only (can be removed in production)
-    // console.debug('Checking if auto-registration is needed...', {
-    //   isExplicitlyDisconnecting: this.isExplicitlyDisconnecting,
-    //   isReregistering: this.isReregistering,
-    //   isAutoRegistering: this.isAutoRegistering,
-    //   isInCall: this.isInCall(),
-    //   hasConfig: !!this.lastSipConfig,
-    //   hasUA: !!this.ua,
-    //   hasRegisterer: !!this.registerer,
-    //   registererState: this.registerer?.state,
-    //   uaConnected: this.ua?.isConnected()
-    // });
-
-    // Don't auto-register if:
-    // - We're explicitly disconnecting
-    // - We're already registering
-    // - We're in a call
-    // - We don't have config
-    // - We're already registered
-    if (this.isExplicitlyDisconnecting) {
-      console.log('Skipping auto-registration: explicitly disconnecting');
-      return;
-    }
-    
-    if (this.isReregistering || this.isAutoRegistering) {
-      console.log('Skipping auto-registration: already registering');
-      return;
-    }
-    
-    if (this.isInCall()) {
-      console.log('Skipping auto-registration: in a call');
-      return;
-    }
-    
-    // Try to get config from storage if lastSipConfig is null
-    let configToUse = this.lastSipConfig;
-    if (!configToUse) {
-      console.log('lastSipConfig is null, trying to load from storage for auto-registration...');
-      configToUse = this.getConfigFromStorage();
-      if (configToUse) {
-        console.log('✅ Loaded config from storage for auto-registration');
-        this.lastSipConfig = configToUse;
-      }
-    }
-    
-    if (!configToUse) {
-      console.log('Skipping auto-registration: no SIP config available');
-      return;
-    }
-    
-    if (!this.ua || !this.registerer) {
-      console.log('Skipping auto-registration: UA or registerer not available');
-      return;
-    }
-
-    // Check if we're registered (handle enum type)
-    const registererState = (this.registerer.state as any).toString ? (this.registerer.state as any).toString() : String(this.registerer.state);
-    if (registererState === 'Registered' || registererState.includes('Registered')) {
-      // Already registered, just ensure status is correct (no need to log)
-      this.onStateChange?.(CallStatus.REGISTERED);
-      return;
-    }
-
-    // Check if UA is connected
-    if (!this.ua || !this.ua.isConnected()) {
-      console.log('UA không kết nối hoặc không tồn tại, đang thử kết nối lại...');
-      try {
-        this.isAutoRegistering = true;
-        await this.connect(configToUse);
-        this.isAutoRegistering = false;
-        console.log('✅ Auto-reconnection successful');
-      } catch (error) {
-        console.error('Auto-registration failed:', error);
-        this.isAutoRegistering = false;
-      }
-      return;
-    }
-
-    // Try to register
-    try {
-      console.log('🔄 Tự động đăng ký khi idle...');
-      this.isAutoRegistering = true;
-      await this.registerer.register();
-      this.isAutoRegistering = false;
-      console.log('✅ Tự động đăng ký thành công');
-      // Ensure status is updated after successful registration
-      // The stateChange listener should handle this, but ensure it's set
-      const registererState = (this.registerer.state as any).toString ? (this.registerer.state as any).toString() : String(this.registerer.state);
-      if (registererState === 'Registered' || registererState.includes('Registered')) {
-        console.log('Registerer state is Registered after auto-registration, setting status to REGISTERED');
-        this.onStateChange?.(CallStatus.REGISTERED);
-      }
-    } catch (error) {
-      console.error('❌ Tự động đăng ký thất bại:', error);
-      this.isAutoRegistering = false;
-      // Retry after a delay
-      setTimeout(() => {
-        if (!this.isAutoRegistering && !this.isReregistering && !this.isInCall()) {
-          console.log('🔄 Retrying auto-registration...');
-          this.autoRegisterIfNeeded().catch(err => {
-            console.error('Retry auto-registration failed:', err);
-          });
-        }
-      }, 3000);
-    }
-  }
 
   async hangup(): Promise<void> {
     // Prevent duplicate hangup calls
@@ -1294,10 +1604,12 @@ export class SIPService {
     let peerConnection: RTCPeerConnection | undefined;
     let localStreamSnapshot: MediaStream | null = null;
     let remoteStreamSnapshot: MediaStream | null = null;
+    // Capture session reference at function level for use in setTimeout callback
+    const session = this.currentSession;
+    const sessionId = session ? (session as any).id : null;
     
     try {
       console.log('Ngắt cuộc gọi');
-      const session = this.currentSession;
       
       if (session) {
         try {
@@ -1315,50 +1627,204 @@ export class SIPService {
         }
       }
       
-      // CRITICAL: Send BYE first to notify remote side before cleanup
+      // CRITICAL: Send BYE first and wait for response before cleanup
+      // This ensures the remote side receives the BYE request properly
       if (session && session.state !== 'Terminated' && session.state !== 'Terminating') {
         try {
           if (session instanceof Inviter) {
             if (session.state === 'Established') {
-              console.log('📞 Sending BYE for outbound call...');
-              // Initiate BYE - don't await the promise as it may not resolve if remote doesn't respond
-              // The dialog will be destroyed when BYE is sent, which stops retransmissions
-              session.bye().catch(error => {
-                // 404 or other errors are acceptable - remote may have already terminated
-                console.warn('⚠️ BYE response error (may be expected):', error);
-              });
-              console.log('✅ BYE initiated for outbound call');
+              console.log('📞 Sending BYE for outbound call and waiting for response...');
+              console.log('📞 Session state before BYE:', session.state);
+              
+              const dialog = (session as any).dialog;
+              const dialogState = dialog?.state;
+              console.log('📞 Dialog state:', dialogState);
+              console.log('📞 Dialog exists:', !!dialog);
+              
+              // CRITICAL: For outbound calls, ensure dialog is in "Confirmed" state before sending BYE
+              // "Confirmed" means ACK was sent and received, dialog is fully established
+              // If dialog is not confirmed, wait a bit for ACK to be sent
+              if (dialog && dialogState !== 'Confirmed' && dialogState !== 'Terminated') {
+                console.warn(`⚠️ Dialog is in "${dialogState}" state, not "Confirmed". Waiting for ACK to be sent...`);
+                // Wait up to 2 seconds for dialog to become confirmed
+                let waitCount = 0;
+                let currentDialogState = dialogState;
+                while (currentDialogState !== 'Confirmed' && waitCount < 20 && session.state === 'Established') {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                  waitCount++;
+                  currentDialogState = (session as any).dialog?.state;
+                  if (currentDialogState === 'Confirmed') {
+                    console.log('✅ Dialog is now confirmed, proceeding with BYE');
+                    break;
+                  }
+                }
+                if (currentDialogState !== 'Confirmed' && currentDialogState !== 'Terminated') {
+                  console.warn(`⚠️ Dialog still not confirmed after waiting (state: ${currentDialogState}), proceeding with BYE anyway`);
+                }
+              }
+              
+              // Verify dialog still exists and is valid before sending BYE
+              const currentDialog = (session as any).dialog;
+              if (!currentDialog) {
+                console.error('❌ No dialog exists - cannot send BYE. Session may have been terminated.');
+                throw new Error('Dialog not available for BYE');
+              }
+              
+              try {
+                // Verify bye() method exists
+                if (typeof session.bye !== 'function') {
+                  console.error('❌ session.bye() is not a function!');
+                  throw new Error('BYE method not available');
+                }
+                
+                console.log('📞 Dialog state before BYE:', currentDialog.state);
+                console.log('📞 Session state before BYE:', session.state);
+                
+                // Call bye() and log the promise
+                const byePromise = session.bye();
+                console.log('📞 BYE promise created, waiting for response or timeout...');
+                
+                // Wait for BYE to be sent and acknowledged (200 OK) or timeout after 5 seconds
+                await Promise.race([
+                  byePromise,
+                  new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('BYE timeout')), 5000)
+                  )
+                ]);
+                console.log('✅ BYE sent and acknowledged by remote side');
+              } catch (error: any) {
+                // 404, timeout, or other errors are acceptable - remote may have already terminated
+                // or network issues may prevent response, but BYE was still sent
+                console.log('📞 BYE promise rejected/resolved with:', error?.message || error);
+                console.log('📞 Session state after BYE attempt:', session.state);
+                console.log('📞 Dialog state after BYE attempt:', (session as any).dialog?.state);
+                
+                if (error?.message === 'BYE timeout') {
+                  console.warn('⚠️ BYE sent but no response received within 5 seconds (may be expected)');
+                  // Verify BYE was actually sent by checking if session state changed
+                  if (session.state === 'Terminating' || session.state === 'Terminated') {
+                    console.log('✅ Session is in Terminating/Terminated state - BYE was likely sent');
+                  } else {
+                    console.error('❌ Session state is not Terminating - BYE may not have been sent!');
+                  }
+                } else {
+                  console.warn('⚠️ BYE response error (may be expected):', error);
+                }
+                // BYE was still sent, so we can proceed with cleanup
+              }
             } else {
               console.log('📞 Cancelling outbound call...');
-              session.cancel().catch(error => {
-                console.error('Error cancelling outbound call:', error);
-              });
+              try {
+                await Promise.race([
+                  session.cancel(),
+                  new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('CANCEL timeout')), 3000)
+                  )
+                ]);
+                console.log('✅ CANCEL sent and acknowledged');
+              } catch (error: any) {
+                console.warn('⚠️ CANCEL response error (may be expected):', error);
+              }
             }
           } else if (session instanceof Invitation) {
             if (session.state === 'Established') {
-              console.log('📞 Sending BYE for inbound call...');
-              // Initiate BYE - don't await the promise as it may not resolve if remote doesn't respond
-              // The dialog will be destroyed when BYE is sent, which stops retransmissions
-              session.bye().catch(error => {
-                // 404 or other errors are acceptable - remote may have already terminated
-                console.warn('⚠️ BYE response error (may be expected):', error);
-              });
-              console.log('✅ BYE initiated for inbound call');
+              console.log('📞 Sending BYE for inbound call and waiting for response...');
+              console.log('📞 Session state before BYE:', session.state);
+              
+              const dialog = (session as any).dialog;
+              // Try multiple ways to access dialog state
+              const dialogState = dialog?.state || dialog?.dialogState || (dialog ? 'exists' : 'missing');
+              console.log('📞 Dialog state:', dialogState);
+              console.log('📞 Dialog exists:', !!dialog);
+              console.log('📞 Dialog object keys:', dialog ? Object.keys(dialog) : 'no dialog');
+              
+              // For inbound calls, dialog should already be confirmed (ACK was sent by remote)
+              // However, if remote didn't send ACK, dialog might still be in Early state
+              // We can still send BYE even if dialog is not confirmed
+              if (!dialog) {
+                console.error('❌ No dialog exists - cannot send BYE. Session may have been terminated.');
+                throw new Error('Dialog not available for BYE');
+              }
+              
+              // Log additional dialog information for debugging
+              if (dialog) {
+                console.log('📞 Dialog details:', {
+                  hasState: 'state' in dialog,
+                  hasDialogState: 'dialogState' in dialog,
+                  stateValue: dialog.state,
+                  dialogStateValue: dialog.dialogState,
+                  callId: dialog.callId,
+                  localTag: dialog.localTag,
+                  remoteTag: dialog.remoteTag
+                });
+              }
+              
+              try {
+                // Verify bye() method exists
+                if (typeof session.bye !== 'function') {
+                  console.error('❌ session.bye() is not a function!');
+                  throw new Error('BYE method not available');
+                }
+                
+                console.log('📞 Dialog state before BYE:', dialogState);
+                console.log('📞 Session state before BYE:', session.state);
+                
+                // Call bye() and log the promise
+                const byePromise = session.bye();
+                console.log('📞 BYE promise created, waiting for response or timeout...');
+                
+                // Wait for BYE to be sent and acknowledged (200 OK) or timeout after 5 seconds
+                await Promise.race([
+                  byePromise,
+                  new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('BYE timeout')), 5000)
+                  )
+                ]);
+                console.log('✅ BYE sent and acknowledged by remote side');
+              } catch (error: any) {
+                // 404, timeout, or other errors are acceptable - remote may have already terminated
+                // or network issues may prevent response, but BYE was still sent
+                console.log('📞 BYE promise rejected/resolved with:', error?.message || error);
+                console.log('📞 Session state after BYE attempt:', session.state);
+                console.log('📞 Dialog state after BYE attempt:', (session as any).dialog?.state);
+                
+                if (error?.message === 'BYE timeout') {
+                  console.warn('⚠️ BYE sent but no response received within 5 seconds (may be expected)');
+                  // Verify BYE was actually sent by checking if session state changed
+                  if (session.state === 'Terminating' || session.state === 'Terminated') {
+                    console.log('✅ Session is in Terminating/Terminated state - BYE was likely sent');
+                  } else {
+                    console.error('❌ Session state is not Terminating - BYE may not have been sent!');
+                  }
+                } else {
+                  console.warn('⚠️ BYE response error (may be expected):', error);
+                }
+                // BYE was still sent, so we can proceed with cleanup
+              }
             } else {
               console.log('📞 Rejecting inbound call...');
-              session.reject().catch(error => {
-                console.error('Error rejecting inbound call:', error);
-              });
+              try {
+                await Promise.race([
+                  session.reject(),
+                  new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('REJECT timeout')), 3000)
+                  )
+                ]);
+                console.log('✅ REJECT sent and acknowledged');
+              } catch (error: any) {
+                console.warn('⚠️ REJECT response error (may be expected):', error);
+              }
             }
           }
         } catch (error) {
           console.error('Error initiating BYE/CANCEL/REJECT:', error);
         }
         
-        // Give BYE time to be sent over the network before cleanup
-        // The dialog will be destroyed when BYE is sent, which stops retransmissions
-        // We don't wait for BYE response as it may not come (404 is acceptable)
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Small delay after BYE/CANCEL/REJECT to ensure:
+        // 1. The request is fully transmitted over the network
+        // 2. The response (if any) can be received and processed
+        // 3. The dialog cleanup completes properly
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
       
       // NOTE: Stream cleanup is handled by cleanup() function in finally block
@@ -1377,19 +1843,65 @@ export class SIPService {
       // Pass captured peer connection and streams to cleanup in case session is disposed
       setTimeout(() => {
         this.cleanup(peerConnection, localStreamSnapshot, remoteStreamSnapshot);
-        // Keep session reference briefly to allow BYE response to be processed
-        setTimeout(() => {
+        
+        // CRITICAL: Clear session reference only if it matches the hung up session
+        // This prevents clearing a newer incoming call session that arrived during hangup
+        const hungUpSessionId = sessionId || 'null';
+        const currentSessionId = this.currentSession ? (this.currentSession as any).id : 'null';
+        console.log('📞 Hung up session ID:', hungUpSessionId);
+        console.log('📞 Current session ID:', currentSessionId);
+        
+        if (this.currentSession === session) {
           this.currentSession = null;
-          console.log('✅ Hangup complete, state set to IDLE');
-          
-          // Reset hangup flag
-          this.isHangingUp = false;
-          
-          // Auto-register if needed
-          this.autoRegisterIfNeeded().catch(error => {
-            console.error('Auto-registration error after hangup:', error);
-          });
-        }, 500);
+          console.log('✅ Hangup complete, session cleared - ready to receive new incoming calls');
+        } else {
+          console.log('⚠️ Not clearing currentSession - it is a different (newer) session');
+          console.log('⚠️ Hung up:', hungUpSessionId, 'Current:', currentSessionId);
+        }
+        
+        // Reset hangup flag
+        this.isHangingUp = false;
+        
+        // Track hangup time to prevent immediate new calls
+        this.lastHangupTime = Date.now();
+        
+        // CRITICAL: Verify and re-set delegate immediately after clearing session
+        // The delegate might be lost during cleanup, so we verify it here
+        if (this.ua && this.ua.isConnected()) {
+          // Verify delegate is still set
+          if (!this.ua.delegate?.onInvite) {
+            console.warn('⚠️ Delegate missing after hangup - re-setting...');
+            const existingDelegate = this.ua.delegate;
+            this.ua.delegate = {
+              onInvite: (session: Session) => {
+                console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+                console.log('📞 Session details:', {
+                  id: (session as any).id,
+                  state: session.state,
+                  remoteIdentity: session.remoteIdentity?.uri?.user,
+                  direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+                });
+                this.handleIncomingCall(session);
+              },
+              onConnect: existingDelegate?.onConnect,
+              onDisconnect: existingDelegate?.onDisconnect
+            };
+            console.log('✅ UserAgent delegate re-set after hangup');
+          } else {
+            console.log('✅ UserAgent delegate verified after hangup - ready to receive calls');
+          }
+        }
+        
+        // Check registration status after a short delay
+        setTimeout(() => {
+          if (this.registerer && this.ua && this.ua.isConnected()) {
+            const registererState = (this.registerer.state as any).toString ? (this.registerer.state as any).toString() : String(this.registerer.state);
+            if (registererState === 'Registered' || registererState.includes('Registered')) {
+              this.onStateChange?.(CallStatus.REGISTERED);
+              console.log('✅ Still registered after hangup - ready to receive new calls');
+            }
+          }
+        }, 100);
       }, 500);
     }
   }
@@ -1654,6 +2166,19 @@ export class SIPService {
       this.cleanupLocalStream();
       this.handleRemoteTermination(session);
     };
+    
+    // Handle ACK timeout for inbound calls (when remote doesn't send ACK after 200 OK)
+    const originalOnAckTimeout = (session.delegate as any).onAckTimeout;
+    (session.delegate as any).onAckTimeout = () => {
+      console.error('❌ ACK TIMEOUT: Remote side did not send ACK after receiving 200 OK');
+      console.error('❌ This is a SIP protocol violation - remote should send ACK to confirm the dialog');
+      console.error('❌ SIP.js will automatically terminate the session due to ACK timeout');
+      if (originalOnAckTimeout) {
+        originalOnAckTimeout.call(session.delegate);
+      }
+      // Note: SIP.js will automatically terminate the session, so we don't need to do cleanup here
+      // The Terminated state handler will handle cleanup
+    };
 
     session.stateChange.addListener((state) => {
       const isOutbound = session instanceof Inviter;
@@ -1725,6 +2250,22 @@ export class SIPService {
         case 'Terminated':
           console.log('📞 Phiên đã kết thúc (Terminated state)');
           
+          // Check if this was due to ACK timeout (for inbound calls)
+          if (session instanceof Invitation && !this.isHangingUp) {
+            // Check if dialog exists and was never confirmed (indicates ACK timeout)
+            const dialog = (session as any).dialog;
+            if (dialog) {
+              const dialogState = dialog?.state || dialog?.dialogState;
+              if (dialogState !== 'Confirmed' && dialogState !== 'Terminated') {
+                console.error('❌ CALL TERMINATED: ACK timeout detected');
+                console.error('❌ Reason: Remote side did not send ACK after receiving 200 OK');
+                console.error('❌ Dialog state:', dialogState, '(should be "Confirmed" but never was)');
+                console.error('❌ This is a SIP protocol violation by the remote side');
+                console.error('❌ SIP.js automatically terminated the session after ~32 seconds');
+              }
+            }
+          }
+          
           // If hangup was already called, skip everything - hangup already handled cleanup
           if (this.isHangingUp) {
             console.log('⚠️ Hangup already in progress, skipping Terminated handler');
@@ -1757,12 +2298,60 @@ export class SIPService {
           this.handleRemoteTermination(session);
           this.cleanup();
           
-          // Clear session reference
-          this.currentSession = null;
+          // CRITICAL: Clear session reference only if it matches the terminated session
+          // This prevents clearing a newer incoming call session
+          const terminatedSessionId = (session as any).id;
+          const currentSessionId = this.currentSession ? (this.currentSession as any).id : 'null';
+          console.log('📞 Terminated session ID:', terminatedSessionId);
+          console.log('📞 Current session ID:', currentSessionId);
+          
+          if (this.currentSession === session) {
+            this.currentSession = null;
+            console.log('✅ Session cleared after termination - ready to receive new incoming calls');
+          } else {
+            console.log('⚠️ Not clearing currentSession - it is a different (newer) session');
+            console.log('⚠️ Terminated:', terminatedSessionId, 'Current:', currentSessionId);
+          }
+          
+          // CRITICAL: Verify and re-set delegate after termination to ensure incoming calls work
+          if (this.ua && this.ua.isConnected()) {
+            if (!this.ua.delegate?.onInvite) {
+              console.warn('⚠️ Delegate missing after termination - re-setting...');
+              const existingDelegate = this.ua.delegate;
+              this.ua.delegate = {
+                onInvite: (session: Session) => {
+                  console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+                  console.log('📞 Session details:', {
+                    id: (session as any).id,
+                    state: session.state,
+                    remoteIdentity: session.remoteIdentity?.uri?.user,
+                    direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+                  });
+                  this.handleIncomingCall(session);
+                },
+                onConnect: existingDelegate?.onConnect,
+                onDisconnect: existingDelegate?.onDisconnect
+              };
+              console.log('✅ UserAgent delegate re-set after termination');
+            } else {
+              console.log('✅ UserAgent delegate verified after termination - ready to receive calls');
+            }
+          }
           
           // Transition to IDLE immediately - no waiting, no retries
           console.log('✅ Cleanup complete, transitioning to IDLE');
           this.onStateChange?.(CallStatus.IDLE);
+          
+          // Ensure we're still registered and ready for new calls
+          setTimeout(() => {
+            if (this.registerer && this.ua && this.ua.isConnected()) {
+              const registererState = (this.registerer.state as any).toString ? (this.registerer.state as any).toString() : String(this.registerer.state);
+              if (registererState === 'Registered' || registererState.includes('Registered')) {
+                this.onStateChange?.(CallStatus.REGISTERED);
+                console.log('✅ Still registered after call termination - ready to receive new calls');
+              }
+            }
+          }, 100);
           break;
       }
     });
@@ -2698,7 +3287,24 @@ export class SIPService {
 
   private handleRemoteTermination(session: Session): void {
     console.log('🔄 Handling remote termination...');
-    // Only handle if this is the current session
+    const sessionId = (session as any).id;
+    const currentSessionId = this.currentSession ? (this.currentSession as any).id : 'null';
+    console.log('📞 Terminating session ID:', sessionId);
+    console.log('📞 Current session ID:', currentSessionId);
+    console.log('📞 Sessions match:', this.currentSession === session);
+    
+    // CRITICAL: Only handle if this is the current session
+    // Don't clear currentSession if it's a different (newer) session
+    if (this.currentSession === session) {
+      console.log('✅ This is the current session - proceeding with cleanup');
+    } else if (!this.currentSession) {
+      console.log('⚠️ No current session - proceeding with cleanup anyway');
+    } else {
+      console.log('⚠️ Different session - skipping cleanup to preserve current session');
+      console.log('⚠️ Terminated session:', sessionId, 'Current session:', currentSessionId);
+      return;
+    }
+    
     if (this.currentSession === session || !this.currentSession) {
       console.log('Cleaning up after remote termination');
       
@@ -2810,8 +3416,14 @@ export class SIPService {
       // CRITICAL: Call cleanup to ensure all streams and camera are closed
       // cleanup() is idempotent and safe to call multiple times
       this.cleanup();
+      
+      // CRITICAL: Clear session reference immediately to allow new incoming calls
+      // Don't wait for cleanup to complete - clear it now so onInvite can process new calls
       this.currentSession = null;
+      console.log('✅ Session cleared, ready to receive new incoming calls');
+      
       this.onStateChange?.(CallStatus.IDLE);
+      
       // Auto-register after session terminates, but only if not already registered
       setTimeout(() => {
         // Check if already registered before attempting auto-registration
@@ -2820,13 +3432,10 @@ export class SIPService {
           if (registererState === 'Registered' || registererState.includes('Registered')) {
             // Already registered, just ensure status is correct
             this.onStateChange?.(CallStatus.REGISTERED);
+            console.log('✅ Still registered after call end - ready to receive new calls');
             return;
           }
         }
-        // Not registered, attempt auto-registration
-        this.autoRegisterIfNeeded().catch(error => {
-          console.error('Auto-registration error after session terminated:', error);
-        });
       }, 500);
     } else {
       console.log('Session termination event for different session, ignoring');
@@ -3565,153 +4174,19 @@ export class SIPService {
    * Handle unregistration event - detects if it's due to idle timeout or other reasons
    * Feature 2: When unregistered event detection, re-register
    */
-  private handleUnregistered(): void {
-    if (this.isExplicitlyDisconnecting || this.isReregistering || this.isAutoRegistering) {
-      console.log('🔌 Unregistration is expected (explicit disconnect or re-registering)');
-      return;
-    }
-
-    const now = Date.now();
-    let reason = 'unknown';
-    let details: any = {};
-
-    // Check if unregistration is due to idle timeout
-    if (this.registrationExpiryTime && now >= this.registrationExpiryTime) {
-      const idleTime = Math.floor((now - (this.registrationExpiryTime || now)) / 1000);
-      reason = 'idle_timeout';
-      details = {
-        idleTimeSeconds: idleTime,
-        lastRegistrationTime: this.lastRegistrationTime ? new Date(this.lastRegistrationTime).toISOString() : null,
-        expectedExpiryTime: this.registrationExpiryTime ? new Date(this.registrationExpiryTime).toISOString() : null,
-        actualTime: new Date(now).toISOString()
-      };
-      console.log(`⏰ Unregistered due to idle timeout. Idle for ${idleTime} seconds`);
-    } else if (this.lastRegistrationTime) {
-      const timeSinceRegistration = Math.floor((now - this.lastRegistrationTime) / 1000);
-      reason = 'server_unregistered';
-      details = {
-        timeSinceRegistrationSeconds: timeSinceRegistration,
-        lastRegistrationTime: new Date(this.lastRegistrationTime).toISOString(),
-        actualTime: new Date(now).toISOString()
-      };
-      console.log(`🔌 Unregistered by server after ${timeSinceRegistration} seconds of registration`);
-    } else {
-      reason = 'unknown';
-      details = {
-        actualTime: new Date(now).toISOString()
-      };
-      console.log('⚠️ Unregistered for unknown reason');
-    }
-
-    // Call the unregistration callback
-    this.onUnregisteredCallback?.(reason, details);
-
-    // Update state
-    this.onStateChange?.(CallStatus.UNREGISTERED);
-
-    // Feature 2: When unregistered event detected, re-register
-    // Auto-reregister if not in a call - with aggressive retry
-    if (!this.isInCall()) {
-      console.log('🔄 Unregistered event detected - attempting to re-register immediately...');
-      this.attemptReRegistration(0); // Start with no delay for first attempt
-    } else {
-      console.log('📞 Unregistered event detected but currently in a call - will re-register after call ends');
-      // Schedule re-registration after call ends
-      const checkCallEnd = setInterval(() => {
-        if (!this.isInCall() && !this.isExplicitlyDisconnecting) {
-          clearInterval(checkCallEnd);
-          console.log('🔄 Call ended - now attempting re-registration...');
-          this.attemptReRegistration(0);
-        }
-      }, 1000);
-      // Clear interval after 60 seconds to prevent infinite loop
-      setTimeout(() => {
-        clearInterval(checkCallEnd);
-      }, 60000);
-    }
-  }
-
-  /**
-   * Attempt re-registration with exponential backoff
-   */
-  private attemptReRegistration(attempt: number, maxAttempts: number = 5): void {
-    if (this.isExplicitlyDisconnecting || this.isInCall()) {
-      this.isReregistering = false;
-      return;
-    }
-
-    if (attempt >= maxAttempts) {
-      console.error('❌ Max re-registration attempts reached');
-      this.isReregistering = false;
-      this.onStateChange?.(CallStatus.FAILED);
-      // Still try auto-register as fallback
-      setTimeout(() => {
-        this.autoRegisterIfNeeded().catch(err => {
-          console.error('Auto-register fallback failed:', err);
-        });
-      }, 5000);
-      return;
-    }
-
-    const delay = Math.min(1000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
-    console.log(`🔄 Re-registration attempt ${attempt + 1}/${maxAttempts} (delay: ${delay}ms)`);
-
-    setTimeout(() => {
-      if (this.isExplicitlyDisconnecting || this.isInCall()) {
-        this.isReregistering = false;
-        return;
-      }
-
-      if (!this.registerer) {
-        console.log('⚠️ Registerer not available, trying full reconnect...');
-        this.isReregistering = false;
-        if (this.lastSipConfig) {
-          this.connect(this.lastSipConfig).catch(err => {
-            console.error('Full reconnect failed:', err);
-            this.attemptReRegistration(attempt + 1, maxAttempts);
-          });
-        }
-        return;
-      }
-
-      if (!this.ua || !this.ua.isConnected()) {
-        console.log('⚠️ UA not connected, trying to reconnect...');
-        this.isReregistering = false;
-        if (this.lastSipConfig) {
-          this.connect(this.lastSipConfig).catch(err => {
-            console.error('Reconnect failed:', err);
-            this.attemptReRegistration(attempt + 1, maxAttempts);
-          });
-        }
-        return;
-      }
-
-      this.isReregistering = true;
-      try {
-        this.registerer.register().then(() => {
-          console.log('✅ Re-registration successful');
-          this.isReregistering = false;
-        }).catch((error) => {
-          console.error(`❌ Re-registration attempt ${attempt + 1} failed:`, error);
-          this.isReregistering = false;
-          this.attemptReRegistration(attempt + 1, maxAttempts);
-        });
-      } catch (error) {
-        console.error(`❌ Re-registration attempt ${attempt + 1} error:`, error);
-        this.isReregistering = false;
-        this.attemptReRegistration(attempt + 1, maxAttempts);
-      }
-    }, delay);
-  }
 
   /**
    * Schedule registration refresh before expiry
    */
   private scheduleRegistrationRefresh(expiresSeconds: number): void {
-    // Clear existing timer
+    // Clear existing timers
     if (this.registrationRefreshTimer) {
       clearTimeout(this.registrationRefreshTimer);
       this.registrationRefreshTimer = null;
+    }
+    if (this.registrationExpiryCheckTimer) {
+      clearTimeout(this.registrationExpiryCheckTimer);
+      this.registrationExpiryCheckTimer = null;
     }
 
     // Refresh at 50% of expiry time to prevent expiration
@@ -3721,6 +4196,13 @@ export class SIPService {
     this.registrationRefreshTimer = setTimeout(() => {
       this.refreshRegistration();
     }, refreshDelay);
+
+    // Also start expiry check timer to detect expiration even if state change doesn't fire
+    // Check every 10 seconds if registration has expired
+    this.registrationExpiryCheckTimer = setInterval(() => {
+      this.checkRegistrationExpiry();
+    }, 10000);
+    console.log('⏰ Started registration expiry check (every 10 seconds)');
   }
 
   /**
@@ -3734,12 +4216,6 @@ export class SIPService {
 
     if (!this.registerer || !this.ua || !this.ua.isConnected()) {
       console.log('⚠️ Cannot refresh registration - registerer or UA not available');
-      // Try to reconnect
-      if (this.lastSipConfig) {
-        this.autoRegisterIfNeeded().catch(err => {
-          console.error('Auto-register after refresh failure:', err);
-        });
-      }
       return;
     }
 
@@ -3747,107 +4223,136 @@ export class SIPService {
     if (currentState === 'Registered' || currentState.includes('Registered')) {
       console.log('🔄 Refreshing registration to prevent expiry...');
       try {
-        this.isReregistering = true;
         await this.registerer.register();
-        this.isReregistering = false;
         console.log('✅ Registration refreshed successfully');
+        
+        // CRITICAL: Verify UserAgent delegate is still set after refresh
+        if (this.ua) {
+          const delegateSet = !!this.ua.delegate?.onInvite;
+          const isConnected = this.ua.isConnected();
+          console.log('✅ After refresh - call reception readiness:', {
+            delegateSet,
+            isConnected,
+            hasOnInvite: !!this.ua.delegate?.onInvite
+          });
+          
+          if (!delegateSet || !isConnected) {
+            console.error('⚠️ WARNING: UserAgent delegate or connection issue after refresh!');
+          }
+        }
       } catch (error) {
         console.error('❌ Registration refresh failed:', error);
-        this.isReregistering = false;
         // Retry refresh
         setTimeout(() => {
           this.refreshRegistration();
         }, 5000);
       }
-    } else {
-      console.log('⚠️ Not registered, attempting full registration...');
-      this.autoRegisterIfNeeded().catch(err => {
-        console.error('Auto-register after state check failed:', err);
-      });
+    } else if (currentState === 'Unregistered' || currentState.includes('Unregistered')) {
+      // Registration expired - attempt to re-register
+      console.log('🔄 Registration expired - attempting to re-register...');
+      await this.autoReRegister();
     }
   }
 
   /**
-   * Start periodic check to ensure we're always registered
-   * Feature 1: Periodically check state - if state is not registered, re-register
+   * Check if registration has expired based on expiry time
    */
-  private startPeriodicRegistrationCheck(): void {
-    // Clear existing interval
-    if (this.registrationCheckInterval) {
-      clearInterval(this.registrationCheckInterval);
-      this.registrationCheckInterval = null;
+  private checkRegistrationExpiry(): void {
+    if (this.isExplicitlyDisconnecting || this.isInCall()) {
+      return;
     }
 
-    console.log('🔄 Starting periodic registration check (every 30 seconds)');
+    if (!this.registerer || !this.ua) {
+      return;
+    }
 
-    // Check every 30 seconds if we're still registered
-    this.registrationCheckInterval = setInterval(() => {
-      if (this.isExplicitlyDisconnecting) {
-        console.log('⏸️ Stopping periodic check - explicitly disconnecting');
-        this.stopPeriodicRegistrationCheck();
-        return;
-      }
-
-      if (!this.registerer || !this.ua) {
-        console.log('⚠️ Periodic check: Registerer or UA not available');
-        return;
-      }
-
+    // Check if we have an expiry time and if it has passed
+    if (this.registrationExpiryTime && Date.now() >= this.registrationExpiryTime) {
       const currentState = String(this.registerer.state);
-      const isConnected = this.ua.isConnected();
+      // Only auto re-register if we're actually unregistered
+      if (currentState === 'Unregistered' || currentState.includes('Unregistered')) {
+        console.log('⏰ Registration expiry time reached - detected expiration, auto re-registering...');
+        this.autoReRegister();
+      } else if (currentState !== 'Registered' && !currentState.includes('Registered')) {
+        // If state is not registered and not in transition, attempt re-registration
+        console.log('⏰ Registration appears expired (state: ' + currentState + ') - auto re-registering...');
+        this.autoReRegister();
+      }
+    }
+  }
 
-      if (!isConnected) {
-        console.log('⚠️ Periodic check: UA disconnected, attempting reconnect...');
-        if (this.lastSipConfig) {
-          this.autoRegisterIfNeeded().catch(err => {
-            console.error('Auto-register on disconnect check failed:', err);
-          });
-        }
+  /**
+   * Automatically re-register when expiration is detected
+   */
+  private async autoReRegister(): Promise<void> {
+    if (this.isExplicitlyDisconnecting || this.isInCall()) {
+      console.log('⏸️ Skipping auto re-registration - disconnecting or in call');
+      return;
+    }
+
+    if (!this.registerer || !this.ua) {
+      console.log('⚠️ Cannot auto re-register - registerer or UA not available');
+      return;
+    }
+
+    // Ensure UA is connected before attempting to re-register
+    if (!this.ua.isConnected()) {
+      console.log('⚠️ UA not connected - waiting for connection before re-registering...');
+      // Wait up to 5 seconds for connection
+      let attempts = 0;
+      while (!this.ua.isConnected() && attempts < 10) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        attempts++;
+      }
+      
+      if (!this.ua.isConnected()) {
+        console.error('❌ Cannot auto re-register - UA not connected after waiting');
         return;
       }
+    }
 
-      // Feature 1: Check if state is not registered, then re-register
-      if (currentState !== 'Registered' && !currentState.includes('Registered')) {
-        console.log(`⚠️ Periodic check: Registration lost (state: ${currentState}), attempting re-registration...`);
-        if (!this.isInCall() && !this.isReregistering && !this.isAutoRegistering) {
-          console.log('🔄 Periodic check: Triggering re-registration...');
-          this.autoRegisterIfNeeded().catch(err => {
-            console.error('Auto-register on state check failed:', err);
-            // If auto-register fails, try direct re-registration
-            if (this.registerer && !this.isReregistering) {
-              this.attemptReRegistration(0);
-            }
-          });
-        } else {
-          console.log(`⏸️ Periodic check: Skipping re-registration (inCall: ${this.isInCall()}, reregistering: ${this.isReregistering}, autoRegistering: ${this.isAutoRegistering})`);
+    console.log('🔄 Attempting to re-register after expiration...');
+    try {
+      await this.registerer.register();
+      console.log('✅ Auto re-registration successful');
+      
+      // CRITICAL: Verify UserAgent delegate is still set after re-registration
+      if (this.ua) {
+        const delegateSet = !!this.ua.delegate?.onInvite;
+        const isConnected = this.ua.isConnected();
+        console.log('✅ After auto re-registration - call reception readiness:', {
+          delegateSet,
+          isConnected,
+          hasOnInvite: !!this.ua.delegate?.onInvite
+        });
+        
+        if (!delegateSet) {
+          console.warn('⚠️ Delegate missing after auto re-registration - re-setting...');
+          const existingDelegate = this.ua.delegate;
+          this.ua.delegate = {
+            onInvite: (session: Session) => {
+              console.log('📞📞📞 INCOMING CALL RECEIVED - onInvite delegate called!');
+              console.log('📞 Session details:', {
+                id: (session as any).id,
+                state: session.state,
+                remoteIdentity: session.remoteIdentity?.uri?.user,
+                direction: session instanceof Invitation ? 'Inbound' : 'Outbound'
+              });
+              this.handleIncomingCall(session);
+            },
+            onConnect: existingDelegate?.onConnect,
+            onDisconnect: existingDelegate?.onDisconnect
+          };
+          console.log('✅ UserAgent delegate re-set after auto re-registration');
         }
-      } else {
-        // Still registered, just log for debugging (can be removed in production)
-        // console.log('✅ Periodic check: Still registered');
       }
-    }, 30000); // Check every 30 seconds
-  }
-
-  /**
-   * Stop periodic registration check
-   */
-  private stopPeriodicRegistrationCheck(): void {
-    if (this.registrationCheckInterval) {
-      clearInterval(this.registrationCheckInterval);
-      this.registrationCheckInterval = null;
+    } catch (error) {
+      console.error('❌ Auto re-registration failed:', error);
+      // Retry after 5 seconds
+      setTimeout(() => {
+        this.autoReRegister();
+      }, 5000);
     }
-    if (this.registrationRefreshTimer) {
-      clearTimeout(this.registrationRefreshTimer);
-      this.registrationRefreshTimer = null;
-    }
-  }
-
-  /**
-   * Set callback for unregistration events
-   * @param callback Function called when unregistered, receives (reason: string, details?: any)
-   */
-  onUnregistered(callback: (reason: string, details?: any) => void): void {
-    this.onUnregisteredCallback = callback;
   }
 
   onStateChanged(callback: (state: CallStatus) => void): void {
@@ -4390,10 +4895,6 @@ export class SIPService {
     await this.toggleVideo(false);
   }
 
-  async ensureRegistered(): Promise<void> {
-    // Public method to ensure we're registered when idle
-    await this.autoRegisterIfNeeded();
-  }
 }
 
 export const sipService = new SIPService();

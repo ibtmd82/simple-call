@@ -57,20 +57,6 @@ function App() {
             }
           });
           
-          // Set up unregistration callback to catch idle timeout events
-          sipService.onUnregistered((reason, details) => {
-            console.log('🔌 Unregistration event caught:', reason, details);
-            if (reason === 'idle_timeout') {
-              console.warn(`⏰ Unregistered due to idle timeout after ${details.idleTimeSeconds} seconds`);
-              // You can add custom handling here, e.g., show notification to user
-              // or trigger re-registration with different strategy
-            } else if (reason === 'server_unregistered') {
-              console.warn(`🔌 Server unregistered client after ${details.timeSinceRegistrationSeconds} seconds`);
-            } else {
-              console.warn('⚠️ Unregistered for unknown reason');
-            }
-          });
-          
           await sipService.connect(config);
         } else {
           console.log('Incomplete SIP configuration. User must configure manually in Settings.');
@@ -89,38 +75,6 @@ function App() {
     }
   }, [sipConfig, loadUserCredentials, setStatus, setRemoteStream, setLocalStream, isConfigLoaded]);
 
-  // Auto-register when status becomes IDLE and not in a call
-  React.useEffect(() => {
-    const checkAndAutoRegister = async () => {
-      // Only auto-register if:
-      // - Status is IDLE or UNREGISTERED
-      // - Not in a call (not CALLING, RINGING, ACTIVE, INCOMING)
-      // - Config is loaded
-      // - We have valid SIP config
-      const isIdleState = status === CallStatus.IDLE || status === CallStatus.UNREGISTERED;
-      const isNotInCall = status !== CallStatus.CALLING && 
-                          status !== CallStatus.RINGING && 
-                          status !== CallStatus.ACTIVE && 
-                          status !== CallStatus.INCOMING &&
-                          status !== CallStatus.CONNECTING;
-      
-      if (isConfigLoaded && isIdleState && isNotInCall && 
-          sipConfig.domain && sipConfig.uri && sipConfig.password && sipConfig.wsServer) {
-        console.log('Status is idle, checking if auto-registration is needed...');
-        // The sipService will handle auto-registration internally
-        // This effect just ensures we trigger it when status changes to IDLE
-        try {
-          await sipService.ensureRegistered();
-        } catch (error) {
-          console.error('Auto-registration check failed:', error);
-        }
-      }
-    };
-
-    // Small delay to avoid race conditions
-    const timeoutId = setTimeout(checkAndAutoRegister, 500);
-    return () => clearTimeout(timeoutId);
-  }, [status, isConfigLoaded, sipConfig]);
 
   // Determine if we're in a call
   const isInCall = status === CallStatus.CALLING || 
